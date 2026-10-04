@@ -1,0 +1,40 @@
+[project]
+name = "live-macd-searcher"
+version = "0.1.0"
+description = "Watch Hyperliquid perps on the 1h timeframe for MACD histogram contraction windows, and follow each one to resolution."
+readme = "README.md"
+requires-python = ">=3.11"
+# Web deps are core, not an extra as in macd_searcher: here the detector and the web
+# app are one process (DESIGN §5), so there is no install without them.
+dependencies = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/live_macd_searcher"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import order, bugbear, and pyupgrade: catch real mistakes and
+# keep imports tidy, without style opinions that would fight the surrounding code.
+select = ["E", "W", "F", "I", "B", "UP"]
