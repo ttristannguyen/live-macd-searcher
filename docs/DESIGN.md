@@ -119,11 +119,13 @@ already through the middle band" is a different job from "show me everything ear
 
 ### Score
 
-Three continuous factors, two categorical multipliers, one bonus. All of it lives in
-one pure function so it is testable and tunable in one place.
+Three continuous factors, two categorical multipliers, one bonus. The arithmetic is
+one pure function in `detect/strength.py`; the numbers it uses are defined once in
+`detect/config.py` with every other tunable (§9), so it is testable in one place and
+tuned in one place.
 
 ```python
-# detect/strength.py — pure: numbers in, numbers out. No DB, no clock, no I/O.
+# detect/config.py — read by detect/strength.py, which is pure: numbers in, a number out.
 
 WEIGHTS = {"decay": 0.40, "persistence": 0.25, "proximity": 0.35}
 REGIME_MULTIPLIER = {"reversal": 1.00, "continuation": 0.85, "transition": 0.70}
@@ -194,7 +196,7 @@ stateDiagram-v2
     forming --> active: bars >= MIN_RUN_BARS and peak_pct >= MIN_PEAK_PCT
     forming --> [*]: histogram re-expands (never published)
     active --> active: another shrink step, score and band updated
-    active --> failed: histogram re-expands in the original direction
+    active --> failed: histogram re-expands or holds flat (shrinking is strict)
     active --> crossed: histogram changes sign — score frozen
     crossed --> crossed: following the move, band and excursions updated
     crossed --> hit: price touches the target band
@@ -444,7 +446,8 @@ CREATE TABLE windows (
   strength           REAL    NOT NULL,  -- frozen at the cross
   price_at_open      REAL    NOT NULL,
   price_at_cross     REAL,
-  price_at_resolve   REAL,
+  price_at_resolve   REAL,              -- close of the resolving bar
+  bars_since_cross   INTEGER NOT NULL DEFAULT 0,  -- drives `expired`; needed to resume after restart
   max_favourable_pct REAL,              -- after the cross, % of price_at_cross
   max_adverse_pct    REAL
 );

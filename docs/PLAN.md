@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M2 — Detector
+**Now:** M3 — Store
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -41,29 +41,32 @@ above this layer is only as correct as this is — build it first and pin it har
 
 ---
 
-## M2 — Detector (pure)
+## M2 — Detector (pure) ✅ (2026-10-05)
 
 Blocked by: M1
 
-- [ ] `detect/config.py` — every constant in DESIGN §9, each with a *why* comment
-- [ ] Normalisation helpers — `hist_pct`, `macd_pct`, `signal_pct` (percent of close), `band_offset` (band widths; zero-width bands → `0`)
-- [ ] `classify_regime(side, macd, signal)` → `reversal` | `continuation` | `transition`
-- [ ] `classify_band(side, band_offset)` → `far` | `near` | `through`
-- [ ] `classify_asset(symbol)` → `crypto` | `equity` | `index` | `commodity` | `fx`, ported from `macd_searcher/classify.py` (unknown `xyz:` → `equity`)
-- [ ] Test: asset class mapping, including an unknown `xyz:` symbol
-- [ ] `detect/strength.py` — `WEIGHTS`, `REGIME_MULTIPLIER`, `BAND_MULTIPLIER`, `LINE_TURN_BONUS`, and one pure `score()` function
-- [ ] `WindowDetector.step(bar, macd, signal, hist, bands)` → `list[WindowEvent]`, implementing the state machine in DESIGN §4 with two slots: contracting and following. A list, because one bar can cross one window and reverse another
-- [ ] Following after the cross: `hit` / `reversed` / `expired` checked in that order from the bar after the cross; `max_favourable_pct`, `max_adverse_pct`, `band_through_at` maintained; `strength` frozen
-- [ ] Noise gate: `peak_pct < MIN_PEAK_PCT` never publishes
-- [ ] Warm-up guard: emits nothing until the symbol has `BACKFILL_BARS` of history
-- [ ] Table-driven tests: hand-written histogram, price, and band sequences asserting open / extend / fail / cross / hit / reversed / expired
-- [ ] Test: re-expansion resolves `failed`; sign flip moves to `crossed`; `hist == 0` counts as a cross
-- [ ] Test: band classification at each threshold, both sides; close on the middle band is `near`
-- [ ] Test: target touched and histogram flipped on the same bar resolves `hit`; `hist == 0` after a cross resolves `reversed`
-- [ ] Test: an opposite-side window crossing resolves the followed window `reversed` on the same bar
+- [x] `detect/config.py` — every constant in DESIGN §9, each with a *why* comment. Includes the strength weights and multipliers, so there is one tuning surface (DESIGN §3 updated to match)
+- [x] Normalisation helpers — `hist_pct`, `macd_pct`, `signal_pct` (percent of close), `band_offset` (band widths; zero-width bands → `0`)
+- [x] `classify_regime(side, macd, signal)` → `reversal` | `continuation` | `transition`
+- [x] `classify_band(side, band_offset)` → `far` | `near` | `through`
+- [x] `classify_asset(symbol)` → `crypto` | `equity` | `index` | `commodity` | `fx`, ported from `macd_searcher/classify.py` (unknown `xyz:` → `equity`)
+- [x] Test: asset class mapping, including an unknown `xyz:` symbol
+- [x] `detect/strength.py` — one pure `score()` function over the `config.py` weights; tested against hand-calculated values
+- [x] `WindowDetector.step(BarReading)` → `list[WindowEvent]`, implementing the state machine in DESIGN §4 with two slots: contracting and following. A list, because one bar can cross one window and reverse another
+- [x] Following after the cross: `hit` / `reversed` / `expired` checked in that order from the bar after the cross; `max_favourable_pct`, `max_adverse_pct`, `band_through_at` maintained; `strength` frozen
+- [x] Noise gate: `peak_pct < MIN_PEAK_PCT` never publishes
+- [x] Warm-up guard: emits nothing until the symbol has `BACKFILL_BARS` of history
+- [x] Table-driven tests: hand-written histogram, price, and band sequences asserting open / extend / fail / cross / hit / reversed / expired
+- [x] Test: re-expansion resolves `failed`; sign flip moves to `crossed`; `hist == 0` counts as a cross
+- [x] Test: band classification at each threshold, both sides; close on the middle band is `near`
+- [x] Test: target touched and histogram flipped on the same bar resolves `hit`; `hist == 0` after a cross resolves `reversed`
+- [x] Test: an opposite-side window crossing resolves the followed window `reversed` on the same bar
 
 **Done when:** the state machine is driven entirely by hand-written number sequences —
-no fixtures, no DB, no clock — and every transition in DESIGN §4 has a test.
+no fixtures, no DB, no clock — and every transition in DESIGN §4 has a test. — met:
+108 passed. Seven planted bugs (hit/reversed order, zero not a cross back, no noise
+gate, slot order, warm-up off by one, flat step as shrink, strength not frozen) each
+turned a test red. Also run end to end over 5,000 real 1h bars for six symbols: see D12.
 
 ---
 
@@ -205,7 +208,8 @@ Blocked by: M9 **and at least three weeks of stored windows.**
 - [ ] `GET /api/stats/outcomes` — cross rate by `asset_class` x `side` x `regime` x `band` x `bars`; hit rate by `band_at_cross` and by whether `band_through_at` preceded the cross
 - [ ] Compare realised cross and hit rates against the `strength` score
 - [ ] Retune `WEIGHTS`, `REGIME_MULTIPLIER`, and `BAND_MULTIPLIER` from the data; record what changed and why
-- [ ] Revisit D3, D6, D7, and `MIN_PEAK_PCT` with evidence
+- [ ] Revisit D3, D6, D7, and D12 with evidence
+- [ ] Baseline for `hit`: how often does price touch the outer band within `POST_CROSS_BARS` from *any* bar? Without it, a hit rate can't be read as an edge (the M2 sample showed ~65% hit given a cross — meaningless until compared)
 - [ ] Split `xyz` outcomes by whether the window opened while the venue was shut (from `started_at`); revisit the dropped market-hours guard (DESIGN §11) if those resolve noticeably worse
 
 **Done when:** the section-3 weights are measurements rather than guesses. Starting this
@@ -224,6 +228,7 @@ Open questions from DESIGN §12. Tick when settled, and record the answer inline
 - [ ] **D5 — `MIN_RUN_BARS` = 2 or 3?** 2 is earlier and noisier. Revisit after a week of live data. → _answer:_
 - [ ] **D6 — Should `near` outrank `through`?** Currently `through` slightly. Awaiting M10. → _answer:_
 - [ ] **D7 — Is `POST_CROSS_BARS = 24` the right horizon?** Awaiting M10. → _answer:_
+- [ ] **D12 — Is `MIN_PEAK_PCT = 0.15` gating out evidence?** Evidence (2026-10-05, M1+M2 run over 5,000 real 1h bars of BTC, ETH, SOL, HYPE, xyz:TSLA, xyz:GOLD with the gate off, ~2,850 resolved windows): the gate drops about half of all windows (median abs(peak) 0.14%), yet hit and cross rates are flat across peak size — <0.05%: 30% hit; 0.15–0.25%: 26%; ≥0.5%: 32%. One sample, six symbols, no baseline yet. Options: keep 0.15, lower to ~0.05 (drops only the smallest ~15%), or remove. → _answer:_
 - [x] **D8 — Timeframe and cadence.** → _answer (2026-10-04):_ 1-hour bars, provisional refresh every 10 minutes. Only closed hourly bars move windows. Replaces the original 5-minute design. (First written as REST polling; moved to a websocket by D1.)
 - [x] **D9 — What happens after a cross?** → _answer (2026-10-04):_ follow the window until it reaches the target band (`hit`), the histogram flips back (`reversed`), or `POST_CROSS_BARS` pass (`expired`).
 - [x] **D10 — Bollinger Bands' role.** → _answer (2026-10-04):_ a first-class `band` field (`far` / `near` / `through` the middle band), filterable, and a score multiplier like regime. Not a gate.
