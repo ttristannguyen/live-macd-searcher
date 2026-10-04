@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M1 — Indicators
+**Now:** M2 — Detector
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -22,21 +22,22 @@ before its blocker is ticked.
 
 ---
 
-## M1 — Indicators (pure)
+## M1 — Indicators (pure) ✅ (2026-10-05)
 
 Blocked by: M0
 
-- [ ] `ema(values, period)` — batch, for backfill seeding
-- [ ] `EmaState` — incremental `update(value) -> float`, O(1), for the live path
-- [ ] `macd(closes)` → `(macd, signal, hist)` and its incremental counterpart
-- [ ] `bollinger(closes, period, width)` → `(middle, upper, lower)`, population stdev; incremental form recomputes over the last `period` closes (no running sums to drift)
-- [ ] `peek(value)` on every incremental indicator — the forming-bar reading without committing state
-- [ ] Golden-vector tests against a fixed input series, asserted to 1e-9
-- [ ] Test: incremental output equals batch output over the same series
-- [ ] Test: `peek()` leaves state unchanged
+- [x] `ema(values, period)` — batch, for backfill seeding. Seeded with the first value, same recurrence as pandas `ewm(adjust=False)` and `macd_searcher`
+- [x] `EmaState` — incremental `update(value) -> float`, O(1), for the live path
+- [x] `macd(closes)` → `MacdPoint(macd, signal, hist)` and `MacdState`; 12/26/9 are module constants (the definition, not tuning)
+- [x] `bollinger(closes, period, width)` → `Bands(middle, upper, lower)`, population stdev; `BollingerState` recomputes over the last `period` closes (no running sums to drift). `period`/`width` are parameters because their values live in `detect/config.py`
+- [x] `peek(value)` on every incremental indicator — the forming-bar reading without committing state
+- [x] Golden-vector tests against a fixed input series, asserted to 1e-9 — expected values from pandas 3.0.5, an independent implementation
+- [x] Test: incremental output equals batch output over the same series
+- [x] Test: `peek()` leaves state unchanged, and equals the next `update()` at the same price
 
 **Done when:** the golden vectors pass and incremental matches batch exactly. Everything
-above this layer is only as correct as this is — build it first and pin it hard.
+above this layer is only as correct as this is — build it first and pin it hard. — met:
+28 passed; planting a sample stdev or a 25-bar slow EMA turns the golden tests red.
 
 ---
 
