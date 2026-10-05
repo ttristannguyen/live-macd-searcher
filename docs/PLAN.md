@@ -132,7 +132,8 @@ Blocked by: M4
 - [ ] `SymbolState` — ring buffer + `EmaState` + Bollinger + `WindowDetector`, one per symbol; `on_bar()` commits, `peek()` does not (replaces `tests/pipeline.py`)
 - [ ] Refresh every `REFRESH_INTERVAL_MIN`: `peek()` each held forming candle (`Ingest.closer.forming`), tag `provisional`, never persist
 - [ ] Daily universe refresh; a symbol below the floors stays subscribed while it has live windows — but only while still listed (DESIGN §6)
-- [ ] Re-seed a symbol to `warming` if its first bar after a gap REST could not fill is discontinuous
+- [ ] `Ingest(last_stored=...)` from the `bars` table, so a restart resumes after the last stored bar (and fills quiet hours from its close)
+- [ ] Re-seed a symbol to `warming` if its gap is longer than REST can fill (> 5,000 h) rather than flat-filling it
 - [ ] Nightly `prune_bars()`
 - [ ] Boot sequence: load `bars` → rebuild state → backfill the gap → reconcile `active` and `crossed` windows → stream goes live
 - [ ] Single asyncio loop; `dict[str, SymbolState]` as the only shared state
@@ -244,8 +245,8 @@ Open questions from DESIGN §12. Tick when settled, and record the answer inline
 - [ ] **D5 — `MIN_RUN_BARS` = 2 or 3?** 2 is earlier and noisier. Revisit after a week of live data. → _answer:_
 - [ ] **D6 — Should `near` outrank `through`?** Currently `through` slightly. Awaiting M10. → _answer:_
 - [ ] **D7 — Is `POST_CROSS_BARS = 24` the right horizon?** Awaiting M10. → _answer:_
-- [ ] **D12 — Is `MIN_PEAK_PCT = 0.15` gating out evidence?** Evidence (2026-10-05, M1+M2 run over 5,000 real 1h bars of BTC, ETH, SOL, HYPE, xyz:TSLA, xyz:GOLD with the gate off, ~2,850 resolved windows): the gate drops about half of all windows (median abs(peak) 0.14%), yet hit and cross rates are flat across peak size — <0.05%: 30% hit; 0.15–0.25%: 26%; ≥0.5%: 32%. One sample, six symbols, no baseline yet. Options: keep 0.15, lower to ~0.05 (drops only the smallest ~15%), or remove. → _answer:_
-- [ ] **D13 — Hours with no trades.** Hyperliquid sends no candle for an hour with no trades (seen 2026-10-05: `xyz:JPY` and `xyz:EWZ` each missing one hour in 400). Today the series simply skips it, so EMAs treat the next bar as consecutive and `bars` / `POST_CROSS_BARS` compress time for thin markets. Alternative: fill the hour with a flat, zero-volume bar at the previous close — the hour happened; price didn't move. Lean: fill. → _answer:_
+- [x] **D12 — Is `MIN_PEAK_PCT = 0.15` gating out evidence?** → _answer (2026-10-05):_ lowered to **0.05**. On 5,000 real 1h bars of six symbols with the gate off (~2,850 resolved windows), 0.15 dropped about half of all windows, yet hit and cross rates were flat across peak size (<0.05%: 30% hit; 0.15–0.25%: 26%; ≥0.5%: 32%). A gated window is never stored, so a high gate could never be corrected by the outcome data; 0.05 drops only the smallest ~15%. Revisit in M10 with the stored outcomes.
+- [x] **D13 — Hours with no trades.** → _answer (2026-10-05):_ keep the previous hour's price — a flat bar at the previous close (open = high = low = close), zero volume. Not a copy of the previous candle, whose high and low would invent a range the target check and excursions would read. Done in `CandleCloser`, which also fills a gap after the last stored bar on restart (DESIGN §6).
 - [x] **D8 — Timeframe and cadence.** → _answer (2026-10-04):_ 1-hour bars, provisional refresh every 10 minutes. Only closed hourly bars move windows. Replaces the original 5-minute design. (First written as REST polling; moved to a websocket by D1.)
 - [x] **D9 — What happens after a cross?** → _answer (2026-10-04):_ follow the window until it reaches the target band (`hit`), the histogram flips back (`reversed`), or `POST_CROSS_BARS` pass (`expired`).
 - [x] **D10 — Bollinger Bands' role.** → _answer (2026-10-04):_ a first-class `band` field (`far` / `near` / `through` the middle band), filterable, and a score multiplier like regime. Not a gate.

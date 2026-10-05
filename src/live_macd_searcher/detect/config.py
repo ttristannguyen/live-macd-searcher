@@ -12,10 +12,11 @@ from .vocabulary import Band, Regime
 MIN_RUN_BARS = 2
 
 # Noise gate: a run whose peak |hist| never reached this percent of close is never
-# published. A histogram wiggling around zero shrinks every few bars and all of it is
-# noise. 0.05 was the 5-minute guess; hourly histograms run ~sqrt(12) = 3.5x larger.
-# A starting point, to be recalibrated from data.
-MIN_PEAK_PCT = 0.15
+# published — a histogram wiggling around zero is noise. Kept low on purpose (PLAN D12):
+# on 5,000 real 1h bars for six symbols, small-peak windows crossed and hit as often as
+# large ones, and 0.15 discarded half of them. A gated window is never stored, so the
+# outcome data could never correct a high gate; 0.05 drops only the smallest ~15%.
+MIN_PEAK_PCT = 0.05
 
 # Band widths below the middle band (read in the window's direction) that still count
 # as `near`. 0.10 of a 4-sigma band is within 0.4 sigma of the 20-bar mean.

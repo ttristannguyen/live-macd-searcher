@@ -32,20 +32,20 @@ class Ingest:
         symbols: list[str],
         on_closed: Callable[[str, Candle], None],
         *,
-        resume_from: Callable[[str], int | None] = lambda symbol: None,
+        last_stored: Callable[[str], Candle | None] = lambda symbol: None,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         """`on_closed` receives every closed candle, in order per symbol.
 
-        `resume_from` gives the `open_time` of the last closed bar already processed for a
-        symbol (None if there is none); the wall clock `now_ms` is only used to choose
-        REST request ranges, never to decide that a bar has closed.
+        `last_stored` gives the last closed bar already stored for a symbol (None if
+        there is none): the gap-fill resumes after it. The wall clock `now_ms` is only used
+        to choose REST request ranges, never to decide that a bar has closed.
         """
         self.feed = feed
         self.symbols = symbols
         self.on_closed = on_closed
-        self.resume_from = resume_from
+        self.last_stored = last_stored
         self.now_ms = now_ms
         self._sleep = sleep
         self.closer = CandleCloser()
@@ -96,17 +96,19 @@ class Ingest:
         held = self.closer.forming.get(symbol)
         if held is not None:
             return held.open_time  # the hour that was forming when the connection dropped
-        last_closed = self.resume_from(symbol)
-        if last_closed is not None:
-            return last_closed + HOUR_MS
+        last = self.closer.last_closed.get(symbol) or self.last_stored(symbol)
+        if last is not None:
+            # Seed the closer, so hours with no trades right after this bar are filled at
+            # its close rather than skipped.
+            self.closer.last_closed[symbol] = last
+            return last.open_time + HOUR_MS
         # Cold start: exactly a full warm-up. Hyperliquid returns every candle that
         # overlaps the range, so starting on an hour boundary BACKFILL_BARS hours back
         # gives BACKFILL_BARS closed candles plus the forming one.
         return (end // HOUR_MS - BACKFILL_BARS) * HOUR_MS
 
     def _offer(self, symbol: str, candle: Candle) -> None:
-        closed = self.closer.offer(symbol, candle)
-        if closed is not None:
+        for closed in self.closer.offer(symbol, candle):
             self.on_closed(symbol, closed)
 
 

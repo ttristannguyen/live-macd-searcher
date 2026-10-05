@@ -74,9 +74,9 @@ def drive(sessions: list[Session], **ingest_options) -> tuple[Recorder, FakeFeed
 def test_closer_releases_a_candle_only_when_a_later_hour_arrives():
     closer = CandleCloser()
     hour0, hour1 = HISTORY["BTC"][0], HISTORY["BTC"][1]
-    assert closer.offer("BTC", partial(hour0)) is None
-    assert closer.offer("BTC", hour0) is None
-    assert closer.offer("BTC", hour1) == hour0
+    assert closer.offer("BTC", partial(hour0)) == []
+    assert closer.offer("BTC", hour0) == []
+    assert closer.offer("BTC", hour1) == [hour0]
     assert closer.forming["BTC"] == hour1
 
 
@@ -85,15 +85,36 @@ def test_closer_keeps_the_more_complete_snapshot_whatever_the_order():
     hour0, hour1 = HISTORY["BTC"][0], HISTORY["BTC"][1]
     closer.offer("BTC", hour0)
     closer.offer("BTC", partial(hour0))  # an older snapshot arriving late
-    assert closer.offer("BTC", hour1) == hour0
+    assert closer.offer("BTC", hour1) == [hour0]
 
 
 def test_closer_ignores_an_hour_that_has_already_closed():
     closer = CandleCloser()
     closer.offer("BTC", HISTORY["BTC"][0])
     closer.offer("BTC", HISTORY["BTC"][1])
-    assert closer.offer("BTC", HISTORY["BTC"][0]) is None
+    assert closer.offer("BTC", HISTORY["BTC"][0]) == []
     assert closer.forming["BTC"] == HISTORY["BTC"][1]
+
+
+def flat(hour: int, price: float) -> Candle:
+    return Candle(hour * HOUR_MS, price, price, price, price, 0.0)
+
+
+def test_closer_fills_hours_with_no_trades_with_flat_bars_at_the_previous_close():
+    # Hyperliquid sends no candle for an hour with no trades (PLAN D13).
+    closer = CandleCloser()
+    hour0, hour3 = HISTORY["BTC"][0], HISTORY["BTC"][3]
+    closer.offer("BTC", hour0)
+    assert closer.offer("BTC", hour3) == [hour0, flat(1, hour0.close), flat(2, hour0.close)]
+
+
+def test_closer_fills_a_gap_after_the_last_stored_bar():
+    # After a restart: the last stored bar is hour 0, and the first fetched is hour 2.
+    closer = CandleCloser()
+    hour0, hour2, hour3 = HISTORY["BTC"][0], HISTORY["BTC"][2], HISTORY["BTC"][3]
+    closer.last_closed["BTC"] = hour0
+    closer.offer("BTC", hour2)
+    assert closer.offer("BTC", hour3) == [flat(1, hour0.close), hour2]
 
 
 # --- sessions ----------------------------------------------------------------------
@@ -112,12 +133,41 @@ def test_streamed_bars_close_with_their_final_snapshot_not_a_partial():
     assert recorder.closed["BTC"][-10:] == HISTORY["BTC"][450:460]
 
 
-def test_resumes_from_the_last_processed_bar_when_told():
-    _, feed = drive(
+def test_resumes_after_the_last_stored_bar():
+    recorder, feed = drive(
         [Session(now_hour=450, messages=[])],
-        resume_from=lambda symbol: 440 * HOUR_MS,
+        last_stored=lambda symbol: HISTORY[symbol][440],
     )
     assert {start for _, start, _ in feed.requests} == {441 * HOUR_MS}
+    assert recorder.closed["BTC"] == HISTORY["BTC"][441:450]
+
+
+class QuietHourFeed(FakeFeed):
+    """BTC has no trades in hour 455: no candle over REST or the websocket."""
+
+    QUIET = 455 * HOUR_MS
+
+    async def candles(self, symbol, start_ms, end_ms):
+        candles = await super().candles(symbol, start_ms, end_ms)
+        return [c for c in candles if not (symbol == "BTC" and c.open_time == self.QUIET)]
+
+    async def _replay(self, messages):
+        async for symbol, candle in super()._replay(messages):
+            if not (symbol == "BTC" and candle.open_time == self.QUIET):
+                yield symbol, candle
+
+
+def test_a_quiet_hour_in_the_stream_becomes_a_flat_bar():
+    feed = QuietHourFeed(HISTORY, [Session(now_hour=450, messages=stream_hours(HISTORY, 450, 460))])
+    recorder = Recorder()
+    ingest = Ingest(feed, SYMBOLS, recorder.on_closed, now_ms=feed.now_ms)
+    with pytest.raises(FeedDisconnected):
+        asyncio.run(ingest.run_session())
+
+    times = [c.open_time // HOUR_MS for c in recorder.closed["BTC"]]
+    assert times == list(range(50, 460))  # no hour missing
+    assert recorder.closed["BTC"][455 - 50] == flat(455, HISTORY["BTC"][454].close)
+    assert recorder.closed["xyz:GOLD"][-10:] == HISTORY["xyz:GOLD"][450:460]  # untouched
 
 
 def test_a_drop_mid_hour_gives_the_same_bars_and_windows_as_no_drop():

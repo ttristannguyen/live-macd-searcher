@@ -352,6 +352,16 @@ This is the part that actually breaks live scanners, so it gets its own section.
   snapshots of one hour meet — a REST gap-fill and a buffered websocket message — the
   one with more volume wins, because volume only grows within an hour; that makes their
   arrival order irrelevant.
+- **Hours with no trades are flat bars, not gaps.** Hyperliquid sends no candle at all
+  for an hour with no trades (seen on thin `xyz` markets). The closer releases each such
+  hour as a bar at the previous close — open, high, low, and close all equal — with zero
+  volume, so the series has every hour (PLAN D13). Not a copy of the previous candle:
+  its high and low would claim a range that never traded, and the target check and the
+  excursions read highs and lows. Skipping the hour instead would make the EMAs treat
+  the next bar as consecutive and compress `bars` and `POST_CROSS_BARS`. A filled hour is
+  stored like any other bar and recognisable by its zero volume. A long silent stretch
+  produces a run of flat bars, which shrinks the histogram toward zero — but a market
+  that quiet has fallen below the liquidity floors (§6, universe refresh).
 - **Exchange time is the only clock.** Every bar is keyed by the exchange's `open_time`
   (`t` in the candle payload). The wall clock schedules refreshes, paces REST, picks the
   range a REST request asks for, and reports "how stale is the feed" in health; it never
@@ -523,7 +533,7 @@ comment recording *why* it has that value:
 
 ```python
 MIN_RUN_BARS          = 2     # shrink steps before publishing; 2 = earlier + noisier, 3 = cleaner + later
-MIN_PEAK_PCT          = 0.15  # noise gate. 0.05 was the 5m guess; hourly hist runs ~sqrt(12) = 3.5x larger. Recalibrate.
+MIN_PEAK_PCT          = 0.05  # noise gate; kept low so the outcome data can still correct it (PLAN D12)
 NEAR_MIDDLE_BAND      = 0.10  # band widths; 0.10 of a 4-sigma band = within 0.4 sigma of the 20-bar mean
 POST_CROSS_BARS       = 24    # one day of hourly bars; beyond that the move isn't this cross's any more
 BOLLINGER_PERIOD      = 20    # the standard; matches every charting package so the board agrees with the chart

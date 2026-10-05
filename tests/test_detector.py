@@ -7,7 +7,7 @@ middle band (`near`) and the targets are far enough away to touch only on purpos
 
 import pytest
 
-from live_macd_searcher.detect.config import BACKFILL_BARS, POST_CROSS_BARS
+from live_macd_searcher.detect.config import BACKFILL_BARS, MIN_PEAK_PCT, POST_CROSS_BARS
 from live_macd_searcher.detect.detector import BarReading, WindowDetector
 from live_macd_searcher.indicators.bollinger import Bands
 
@@ -87,9 +87,18 @@ def test_a_forming_run_that_re_expands_is_never_published():
     assert kinds(events) == [[], [], [], []]
 
 
+def shrinking_from(peak: float) -> list[BarReading]:
+    return hists(-peak, -peak * 0.8, -peak * 0.6, -peak * 0.4)
+
+
 def test_noise_gate_never_publishes_a_shallow_peak():
-    _, events = feed(hists(-0.10, -0.08, -0.06, -0.04, -0.02))
+    _, events = feed(shrinking_from(MIN_PEAK_PCT * 0.9))
     assert all(e == [] for e in events)
+
+
+def test_noise_gate_publishes_a_peak_just_above_it():
+    _, events = feed(shrinking_from(MIN_PEAK_PCT * 1.1))
+    assert kinds(events)[2] == [("opened", "active")]
 
 
 def test_a_new_run_starts_from_the_bar_where_the_last_one_ended():
