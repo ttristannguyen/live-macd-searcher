@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M3 — Store
+**Now:** M4 — Ingest
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -70,19 +70,22 @@ turned a test red. Also run end to end over 5,000 real 1h bars for six symbols: 
 
 ---
 
-## M3 — Store
+## M3 — Store ✅ (2026-10-05)
 
 Blocked by: M2
 
-- [ ] `schema.sql` — `bars`, `windows` (with `asset_class`), indexes, `CHECK` constraints from DESIGN §7
-- [ ] Applied on boot; SQLite in WAL mode
-- [ ] `upsert_bar()` — idempotent on `(symbol, open_time)`
-- [ ] `open_window()` / `update_window()` / `cross_window()` / `resolve_window()` — `cross_window()` writes `crossed_at`, `price_at_cross`, `band_at_cross`; `resolve_window()` writes `resolved_at`, `price_at_resolve`, excursions
-- [ ] Nightly prune of `bars` older than 90 days; `windows` never pruned
-- [ ] Test: replaying the same bar range twice yields identical windows and no duplicate rows
+- [x] `schema.sql` — `bars`, `windows` (with `asset_class`), indexes, `CHECK` constraints from DESIGN §7; `UNIQUE (symbol, started_at)` is a window's identity
+- [x] Applied on boot; SQLite in WAL mode
+- [x] `upsert_bar()` — idempotent on `(symbol, open_time)`
+- [x] ~~`open_window()` / `update_window()` / `cross_window()` / `resolve_window()`~~ → one `upsert_window()`. A `Window` is a complete immutable snapshot, so one upsert on `(symbol, started_at)` covers every transition; a guard on `updated_at` stops an older snapshot overwriting a newer one
+- [x] `prune_bars()` — bars more than `BAR_RETENTION_DAYS` (90) older than the newest stored bar; `windows` never pruned. *Nightly scheduling* is runtime wiring: M5
+- [x] Test: replaying the same bar range twice yields identical windows and no duplicate rows — plus replaying an earlier part of the range rolls nothing back
 
 **Done when:** replay is provably a no-op. This is the property that makes reconnects and
-restarts safe, so it gets a test before anything depends on it.
+restarts safe, so it gets a test before anything depends on it. — met: 121 passed. Real
+indicators and detector over 800 bars into SQLite, then a full replay and a partial one,
+leave both tables byte-identical. Removing the `updated_at` guard turns the partial
+replay test red (a full replay alone would not have caught it).
 
 ---
 
@@ -118,6 +121,7 @@ without a single REST 429.
 Blocked by: M4
 
 - [ ] `SymbolState` — ring buffer + `EmaState` + Bollinger + `WindowDetector`, one per symbol; `on_bar()` commits, `peek()` does not
+- [ ] Nightly `prune_bars()`
 - [ ] Boot sequence: load `bars` → rebuild state → backfill the gap → reconcile `active` and `crossed` windows → stream goes live
 - [ ] Single asyncio loop; `dict[str, SymbolState]` as the only shared state
 - [ ] Structured logging: websocket connect/disconnect, gap-fill (symbols, bars, weight spent), window opened/crossed/resolved

@@ -57,6 +57,14 @@ LINE_TURN_BONUS = 1.10
 # more convincing than a 6-hour one, just slower.
 PERSISTENCE_SATURATES_AT = 6
 
+# --- storage (DESIGN §7) -----------------------------------------------------------
+
+# Bars older than this, counted back from the newest stored bar, are pruned. Far longer
+# than warm-up needs (~17 days), and long enough to keep the bar-by-bar trace of any
+# window worth looking back at. Windows themselves are never pruned: they are the
+# evidence base.
+BAR_RETENTION_DAYS = 90
+
 # --- feed and universe (DESIGN §5, §6) ---------------------------------------------
 
 # Provisional refresh cadence. Closed-bar logic is hourly regardless.

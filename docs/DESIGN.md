@@ -449,17 +449,25 @@ CREATE TABLE windows (
   price_at_resolve   REAL,              -- close of the resolving bar
   bars_since_cross   INTEGER NOT NULL DEFAULT 0,  -- drives `expired`; needed to resume after restart
   max_favourable_pct REAL,              -- after the cross, % of price_at_cross
-  max_adverse_pct    REAL
+  max_adverse_pct    REAL,
+  UNIQUE (symbol, started_at)           -- a window's identity
 );
 
-CREATE INDEX windows_live      ON windows(state, strength DESC);
-CREATE INDEX windows_by_symbol ON windows(symbol, started_at DESC);
+CREATE INDEX windows_live ON windows(state, strength DESC);
 ```
+
+A window's identity is `(symbol, started_at)`: two runs on one symbol can never share a
+peak bar, because a new run only starts after the last one ended. Every write is one
+upsert of the window's whole snapshot on that key, guarded so a snapshot with an older
+`updated_at` never overwrites a newer one. Replaying any range of bars — the same range
+twice, or an earlier part of it after a crash — therefore changes nothing. The unique
+constraint's index also serves per-symbol lookups, so there is no separate one.
 
 `asset_class` is stored on the window, not derived at query time, so a later change to the classification sets cannot
 silently relabel past outcomes.
 
-Retention: `bars` older than 90 days are pruned nightly — three months of hourly bars
+Retention: `bars` more than 90 days older than the newest stored bar are pruned
+nightly — measured from exchange time, not the wall clock. Three months of hourly bars
 is still a quarter of the rows the 5-minute design kept for 30 days, and it keeps the
 bar-by-bar trace available for every window worth looking back at. `windows` are kept
 forever — they are tiny, and they are the evidence base.
