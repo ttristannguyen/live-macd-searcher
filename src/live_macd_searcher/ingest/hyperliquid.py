@@ -31,7 +31,7 @@ from ..detect.config import (
     WS_SUBSCRIBE_TIMEOUT_SECONDS,
 )
 from ..market import Candle
-from .feed import HOUR_MS, CandleMessage, FeedDisconnected, FeedError
+from .feed import HOUR_MS, CandleMessage, FeedDisconnected, FeedError, Universe
 from .pacer import RestPacer
 
 log = logging.getLogger(__name__)
@@ -65,15 +65,19 @@ class HyperliquidFeed:
 
     # --- REST --------------------------------------------------------------------------
 
-    async def universe(self) -> list[str]:
-        symbols: list[str] = []
+    async def universe(self) -> Universe:
+        tradeable: list[str] = []
+        listed: set[str] = set()
         for dex in (None, *EXTRA_DEXES):
             body = {"type": "metaAndAssetCtxs"} | ({"dex": dex} if dex else {})
             meta, contexts = await self._info(body, INFO_WEIGHT)
             for market, context in zip(meta["universe"], contexts, strict=True):
+                name = market["name"]  # xyz names arrive prefixed: "xyz:TSLA"
+                if not market.get("isDelisted"):
+                    listed.add(name)
                 if _tradeable(market, context):
-                    symbols.append(market["name"])  # xyz names arrive prefixed: "xyz:TSLA"
-        return symbols
+                    tradeable.append(name)
+        return Universe(tradeable, frozenset(listed))
 
     async def candles(self, symbol: str, start_ms: int, end_ms: int) -> list[Candle]:
         expected = (end_ms - start_ms) // HOUR_MS + 1

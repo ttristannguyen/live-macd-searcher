@@ -13,6 +13,10 @@ dependencies = [
     "websockets>=12.0",
 ]
 
+[project.scripts]
+# Headless for now (M5); M6 runs the same runtime inside the web app.
+live-macd-searcher = "live_macd_searcher.__main__:cli"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

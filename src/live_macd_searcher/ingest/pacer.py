@@ -28,6 +28,7 @@ class RestPacer:
         self._sleep = sleep
         self._spent: deque[tuple[float, int]] = deque()  # (when, weight), oldest first
         self._lock = asyncio.Lock()
+        self.total_spent = 0  # all-time, for logs and health
 
     async def spend(self, weight: int) -> None:
         """Wait until `weight` fits in the last minute's budget, then record it as spent."""
@@ -41,6 +42,7 @@ class RestPacer:
                     self._spent.popleft()
                 if sum(w for _, w in self._spent) + weight <= self.weight_per_min:
                     self._spent.append((now, weight))
+                    self.total_spent += weight
                     return
                 # Sleep until the oldest spend leaves the window, then look again.
                 await self._sleep(self._spent[0][0] + WINDOW_SECONDS - now)

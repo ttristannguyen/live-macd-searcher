@@ -92,7 +92,7 @@ async def warm(feed: HyperliquidFeed, symbols: list[str]) -> None:
 async def main(warm_up: bool) -> None:
     async with httpx.AsyncClient() as client:
         feed = HyperliquidFeed(client, RestPacer(REST_WEIGHT_PER_MIN))
-        symbols = await feed.universe()
+        symbols = (await feed.universe()).tradeable
         classes = Counter("xyz" if ":" in s else "core" for s in symbols)
         print(f"universe: {len(symbols)} symbols {dict(classes)}")
         try:

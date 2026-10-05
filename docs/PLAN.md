@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M5 — Runtime wiring
+**Now:** M6 — API
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -125,22 +125,34 @@ the overlap behaviour explains 401, not 402, and it did not reproduce once align
 
 ---
 
-## M5 — Runtime wiring
+## M5 — Runtime wiring ✅ (2026-10-05)
 
 Blocked by: M4
 
-- [ ] `SymbolState` — ring buffer + `EmaState` + Bollinger + `WindowDetector`, one per symbol; `on_bar()` commits, `peek()` does not (replaces `tests/pipeline.py`)
-- [ ] Refresh every `REFRESH_INTERVAL_MIN`: `peek()` each held forming candle (`Ingest.closer.forming`), tag `provisional`, never persist
-- [ ] Daily universe refresh; a symbol below the floors stays subscribed while it has live windows — but only while still listed (DESIGN §6)
-- [ ] `Ingest(last_stored=...)` from the `bars` table, so a restart resumes after the last stored bar (and fills quiet hours from its close)
-- [ ] Re-seed a symbol to `warming` if its gap is longer than REST can fill (> 5,000 h) rather than flat-filling it
-- [ ] Nightly `prune_bars()`
-- [ ] Boot sequence: load `bars` → rebuild state → backfill the gap → reconcile `active` and `crossed` windows → stream goes live
-- [ ] Single asyncio loop; `dict[str, SymbolState]` as the only shared state
-- [ ] Structured logging: websocket connect/disconnect, gap-fill (symbols, bars, weight spent), window opened/crossed/resolved
-- [ ] Test: restart mid-run reproduces identical window rows
+- [x] `SymbolState` (`detect/symbol_state.py`, pure) — MACD + Bollinger + `WindowDetector`, one per symbol; `on_bar()` commits (guarding the indicators against duplicate and out-of-order bars, not just the detector), `peek()` does not. No separate ring buffer: the bars live in SQLite. Replaced `tests/pipeline.py`
+- [x] Refresh every `REFRESH_INTERVAL_MIN`: `peek()` each held forming candle into `Runtime.provisional`, never persisted (SSE broadcast is M7)
+- [x] Daily job: `prune_bars()`, then the universe refresh. `universe()` now returns `tradeable` and `listed`; a symbol below the floors stays subscribed while it has live windows, but only while still listed; `Ingest.resubscribe()` applies a change by ending the session
+- [x] `Ingest(last_stored=...)` from the `bars` table, so a restart resumes after the last stored bar and fills quiet hours from its close
+- [x] Re-seed a symbol whose last stored bar is older than `BAR_RETENTION_DAYS` (the rule, not "> 5,000 h": splicing a fresh backfill onto old bars would seed the next boot's replay differently)
+- [x] Boot sequence: universe → replay every stored bar per symbol from the earliest (bitwise-identical state) → feed resumes after the last stored bar
+- [x] Single asyncio loop (`TaskGroup`: ingest, refresh, daily); `dict[str, SymbolState]` as the only shared state
+- [x] Logging: boot (symbols, warm from stored bars), connect, gap-fill (bars, symbols fetched, seconds), disconnects, windows, universe changes, prunes
+- [x] `record_bar()`: a bar and its window snapshots in one transaction, so a restart's replay writes nothing
+- [x] `synchronous=NORMAL`: per-bar commits went from 28 ms to 0.04 ms on a spinning disk (DESIGN §7)
+- [x] A reconnect or restart only fetches symbols for which an hour may have closed (`CLOCK_SKEW_MARGIN_SECONDS`): within the hour it streams again in seconds instead of re-fetching everything
+- [x] `python -m live_macd_searcher` / `live-macd-searcher` — runs headless; M6 puts the same runtime inside the web app
+- [x] Test: restart mid-run reproduces identical window rows
 
 **Done when:** killing and restarting the process changes nothing about the stored windows.
+— met: offline, a process killed mid-hour 583 with a BTC window `active` (it crosses during
+the downtime and resolves after) and restarted at 587 leaves `bars` and `windows`
+identical to a process that never stopped. Replaying only the last 300 or 450 stored bars
+instead of all of them each turned that test red. 170 passed. Live (desktop): cold start
+of 166 symbols in 7.1 min; killed and restarted twice — boot rebuilt 165–166 warm symbols
+from stored bars in ~2 s and streamed again within ~9 s; at the 23:00 rollover, 162 of 167
+symbols closed their bar from the stream within minutes, and 5 thin `xyz` markets waited
+for their first trade (late, never early). No windows yet, correctly: a window needs two
+post-warm-up shrink steps, so the first can open at the second rollover.
 
 ---
 

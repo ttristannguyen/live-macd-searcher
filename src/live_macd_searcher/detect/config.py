@@ -93,6 +93,13 @@ WS_SUBSCRIBE_TIMEOUT_SECONDS = 30
 REST_ATTEMPTS = 3
 REST_TIMEOUT_SECONDS = 15
 
+# A reconnect or restart skips REST for a symbol when no hour has closed since its last
+# bar: the websocket resends the forming hour's full candle on its own. That decision
+# reads the wall clock, so it is only trusted this long after the hour turns; nearer
+# the boundary a slightly slow clock could mistake a closed hour for the forming one,
+# so it fetches. The droplet's clock is NTP-synced to well under a second.
+CLOCK_SKEW_MARGIN_SECONDS = 60
+
 # Reconnect backoff doubles from 1 s up to this, so an exchange outage is retried about
 # once a minute rather than hammered.
 RECONNECT_MAX_BACKOFF_SECONDS = 60

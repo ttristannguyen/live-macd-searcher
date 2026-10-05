@@ -30,29 +30,50 @@ _UPSERT_WINDOW = f"""
 """
 
 
+_UPSERT_BAR = """
+    INSERT INTO bars (symbol, open_time, open, high, low, close, volume)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (symbol, open_time) DO UPDATE SET
+        open = excluded.open, high = excluded.high, low = excluded.low,
+        close = excluded.close, volume = excluded.volume
+"""
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     """Open the database and apply the schema. Safe to call on every boot."""
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     # WAL lets the web layer read while the detector writes, without either blocking.
     conn.execute("PRAGMA journal_mode=WAL")
+    # Commits stay atomic, but stop waiting on the disk: ~28 ms -> 0.04 ms per bar on a
+    # spinning disk, the difference between a 31-minute and an instant cold start. The
+    # trade is the last few commits on a power loss or OS crash (an app crash loses
+    # nothing). Safe here, and exact: the next boot gap-fills from the last bar that
+    # survived, and the replay re-derives the very same windows.
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     return conn
+
+
+def record_bar(
+    conn: sqlite3.Connection, symbol: str, candle: Candle, windows: list[Window]
+) -> None:
+    """Store a closed bar and every window snapshot it produced, in one transaction.
+
+    Atomic on purpose: a crash can never leave a bar stored without its windows. That
+    is what lets a restart rebuild state by replaying stored bars without writing
+    anything — whatever they produced is already here.
+    """
+    with conn:
+        conn.execute(_UPSERT_BAR, (symbol, *candle))
+        for window in windows:
+            conn.execute(_UPSERT_WINDOW, astuple(window))
 
 
 def upsert_bar(conn: sqlite3.Connection, symbol: str, candle: Candle) -> None:
     """Store one closed bar. Writing the same bar again is a no-op (DESIGN §6)."""
     with conn:
-        conn.execute(
-            """
-            INSERT INTO bars (symbol, open_time, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (symbol, open_time) DO UPDATE SET
-                open = excluded.open, high = excluded.high, low = excluded.low,
-                close = excluded.close, volume = excluded.volume
-            """,
-            (symbol, *candle),
-        )
+        conn.execute(_UPSERT_BAR, (symbol, *candle))
 
 
 def upsert_window(conn: sqlite3.Connection, window: Window) -> None:
@@ -64,6 +85,28 @@ def upsert_window(conn: sqlite3.Connection, window: Window) -> None:
     """
     with conn:
         conn.execute(_UPSERT_WINDOW, astuple(window))
+
+
+def load_bars(conn: sqlite3.Connection, symbol: str) -> list[Candle]:
+    """Every stored bar for a symbol, oldest first: what a restart replays."""
+    rows = conn.execute(
+        "SELECT open_time, open, high, low, close, volume FROM bars"
+        " WHERE symbol = ? ORDER BY open_time",
+        (symbol,),
+    )
+    return [Candle(*row) for row in rows]
+
+
+def forget_bars(conn: sqlite3.Connection, symbol: str) -> None:
+    """Delete a symbol's stored bars, to re-seed it from scratch. Its windows are kept."""
+    with conn:
+        conn.execute("DELETE FROM bars WHERE symbol = ?", (symbol,))
+
+
+def live_symbols(conn: sqlite3.Connection) -> set[str]:
+    """Symbols with a window still `active` or `crossed`: they must stay subscribed."""
+    rows = conn.execute("SELECT DISTINCT symbol FROM windows WHERE state IN ('active', 'crossed')")
+    return {row[0] for row in rows}
 
 
 def prune_bars(conn: sqlite3.Connection) -> int:

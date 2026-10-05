@@ -379,7 +379,13 @@ This is the part that actually breaks live scanners, so it gets its own section.
   Hyperliquid has *confirmed* every subscription, buffering incoming messages; then
   REST-fetch each symbol from the hour that was forming when the connection dropped (or
   from its last processed bar); replay the closed ones; then drain the buffer. The closer
-  and the out-of-order guard below make the overlap harmless. REST can serve the last
+  and the out-of-order guard below make the overlap harmless. A symbol is only fetched
+  if an hour may have closed since its last bar: the websocket resends the forming
+  hour's *whole* candle, so an outage inside one hour misses nothing, and a restart or
+  reconnect within the hour streams again in seconds instead of re-fetching every
+  symbol (~3,500 weight, ~6 minutes paced). The wall clock is only trusted for that
+  more than `CLOCK_SKEW_MARGIN_SECONDS` past the hour; nearer the boundary it fetches,
+  which is always safe. REST can serve the last
   5,000 candles, so only an outage longer than that leaves a hole — then the symbol
   drops back to `warming` and re-seeds from scratch rather than splicing (M5). Reconnect
   attempts back off from 1 s to `RECONNECT_MAX_BACKOFF_SECONDS`; a feed that stays down
@@ -391,9 +397,23 @@ This is the part that actually breaks live scanners, so it gets its own section.
 - **Duplicates and out-of-order bars.** Bars upsert on `(symbol, open_time)`. The
   detector ignores any bar whose `open_time` is not strictly greater than the last one
   it processed. Replaying the same range twice is a no-op.
-- **Restart.** On boot: load `bars` from SQLite, rebuild `SymbolState`, backfill the
-  gap, then reconcile — any window still `active` or `crossed` in the DB is either
-  resumed or resolved by the replayed bars before the stream goes live.
+- **Restart.** On boot, every subscribed symbol's stored bars are replayed through a
+  fresh `SymbolState`, **from the earliest stored bar**. That is the bar the previous
+  process seeded its EMAs from, so the replay performs the same float operations on the
+  same inputs and rebuilds bitwise-identical state — half-formed runs and followed
+  windows included. Replaying only recent bars is *not* equivalent: even 450 bars, long
+  past nominal EMA convergence, changed stored windows in testing. The replay writes
+  nothing, because each closed bar and the window snapshots it produced are stored in
+  one transaction (`record_bar`): a crash can't leave a bar without its windows. Then
+  the feed gap-fills from the last stored bar. Cost: ~23 s for a full 90 days of 165
+  symbols on a desktop, about two thirds of it Bollinger's exact standard deviation; a
+  faster `math.fsum` version is the first optimisation if the droplet's boot is slow.
+  After a prune moves the earliest bar, the next boot seeds one bar later; the
+  difference is below float resolution after 90 days of decay, but it is not bitwise.
+- **Down longer than retention.** A symbol whose last stored bar is more than
+  `BAR_RETENTION_DAYS` old is re-seeded from scratch: its stored bars are dropped (its
+  windows kept) and it cold-starts. Gap-filling would flat-fill months, and splicing a
+  fresh backfill onto old bars would seed the *next* boot's replay differently.
 - **Universe refresh.** Once a day, `metaAndAssetCtxs` for the core DEX and for `xyz`
   rebuilds the universe: not delisted, `growthMode` enabled where present, and above
   both liquidity floors (`MIN_DAY_VOLUME_USD`, `MIN_OPEN_INTEREST_USD`). A symbol that
@@ -427,7 +447,11 @@ anything else is `equity`, the most common case on that DEX.
 ## 7. Storage
 
 SQLite in WAL mode. It is a single writer appending one row per symbol per hour;
-Postgres would be ceremony.
+Postgres would be ceremony. `synchronous=NORMAL`: commits stay atomic but stop waiting
+on the disk — 28 ms per bar became 0.04 ms on a spinning disk, the difference between a
+31-minute and an instant cold start. It gives up the last few commits on a power loss
+or OS crash (never on an app crash), which this app can afford exactly: the next boot
+gap-fills from the last bar that survived, and the replay re-derives the same windows.
 
 ```sql
 CREATE TABLE bars (

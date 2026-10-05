@@ -4,12 +4,25 @@ REST answers as of the current session's `now_hour`: every earlier hour closed, 
 still forming. Each websocket session replays a scripted list of messages, then drops.
 """
 
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from live_macd_searcher.ingest.feed import HOUR_MS, CandleMessage, FeedDisconnected
+from live_macd_searcher.ingest.feed import HOUR_MS, CandleMessage, FeedDisconnected, Universe
 from live_macd_searcher.market import Candle
+
+
+def synthetic_history(hours: int, phase: float) -> list[Candle]:
+    """A deterministic hourly market: two sines, cents, and growing volume. Long enough
+    histories produce windows of every kind after warm-up."""
+    candles, previous = [], 100.0
+    for hour in range(hours):
+        close = round(100 + 6 * math.sin(hour / 9 + phase) + 2.5 * math.sin(hour / 2.7), 2)
+        high, low = max(previous, close) + 0.3, min(previous, close) - 0.3
+        candles.append(Candle(hour * HOUR_MS, previous, high, low, close, 100.0 + hour))
+        previous = close
+    return candles
 
 
 def partial(candle: Candle) -> Candle:
@@ -49,8 +62,8 @@ class FakeFeed:
     def now_ms(self) -> int:
         return self.now_hour * HOUR_MS + HOUR_MS // 2  # mid-hour
 
-    async def universe(self) -> list[str]:
-        return list(self.history)
+    async def universe(self) -> Universe:
+        return Universe(list(self.history), frozenset(self.history))
 
     async def candles(self, symbol: str, start_ms: int, end_ms: int) -> list[Candle]:
         """Every candle *overlapping* the range, as Hyperliquid returns them (observed

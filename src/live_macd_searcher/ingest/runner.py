@@ -17,7 +17,11 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
-from ..detect.config import BACKFILL_BARS, RECONNECT_MAX_BACKOFF_SECONDS
+from ..detect.config import (
+    BACKFILL_BARS,
+    CLOCK_SKEW_MARGIN_SECONDS,
+    RECONNECT_MAX_BACKOFF_SECONDS,
+)
 from ..market import Candle
 from .closer import CandleCloser
 from .feed import HOUR_MS, CandleMessage, FeedDisconnected, FeedError, MarketFeed
@@ -51,6 +55,18 @@ class Ingest:
         self.closer = CandleCloser()
         self.streaming = False  # gap-fill done and the live stream flowing
         self.last_session_streamed = False  # a session that got that far resets the backoff
+        self._buffer: asyncio.Queue | None = None  # the current session's, while one runs
+
+    def resubscribe(self, symbols: list[str]) -> None:
+        """Change the subscription list. The current session ends, and `run()` reconnects
+        with the new list: a new symbol gets a cold start, the rest gap-fill as usual.
+
+        Every name must be one the exchange lists — one that isn't drops the whole
+        connection (DESIGN §6).
+        """
+        self.symbols = symbols
+        if self._buffer is not None:
+            self._buffer.put_nowait(FeedDisconnected("resubscribing"))
 
     async def run(self) -> None:
         """Run sessions forever, backing off between them. Only `FeedError`s are retried:
@@ -71,7 +87,9 @@ class Ingest:
         """One connection: subscribe, gap-fill, stream. Ends by raising `FeedError`."""
         self.last_session_streamed = False
         async with self.feed.connect(self.symbols) as messages:
+            log.info("connected: %d symbols subscribed", len(self.symbols))
             buffer: asyncio.Queue[CandleMessage | BaseException] = asyncio.Queue()
+            self._buffer = buffer
             pump = asyncio.create_task(_pump(messages, buffer))
             try:
                 await self._gap_fill()
@@ -83,14 +101,22 @@ class Ingest:
                     self._offer(*item)
             finally:
                 self.streaming = False
+                self._buffer = None
                 pump.cancel()
                 await asyncio.gather(pump, return_exceptions=True)
 
     async def _gap_fill(self) -> None:
         end = self.now_ms()
+        started, closed, fetched = time.monotonic(), 0, 0
         for symbol in self.symbols:
-            for candle in await self.feed.candles(symbol, self._gap_start(symbol, end), end):
-                self._offer(symbol, candle)
+            start = self._gap_start(symbol, end)
+            if not _hour_closed_since(start, end):
+                continue  # nothing missed: the stream resends the forming hour in full
+            fetched += 1
+            for candle in await self.feed.candles(symbol, start, end):
+                closed += self._offer(symbol, candle)
+        log.info("gap-filled %d closed bars from %d of %d symbols in %.0fs",
+                 closed, fetched, len(self.symbols), time.monotonic() - started)  # fmt: skip
 
     def _gap_start(self, symbol: str, end: int) -> int:
         held = self.closer.forming.get(symbol)
@@ -107,9 +133,25 @@ class Ingest:
         # gives BACKFILL_BARS closed candles plus the forming one.
         return (end // HOUR_MS - BACKFILL_BARS) * HOUR_MS
 
-    def _offer(self, symbol: str, candle: Candle) -> None:
-        for closed in self.closer.offer(symbol, candle):
-            self.on_closed(symbol, closed)
+    def _offer(self, symbol: str, candle: Candle) -> int:
+        """Offer one snapshot to the closer; pass on what it closes. Returns how many."""
+        closed = self.closer.offer(symbol, candle)
+        for bar in closed:
+            self.on_closed(symbol, bar)
+        return len(closed)
+
+
+def _hour_closed_since(start: int, now: int) -> bool:
+    """Whether an hour at or after `start` may have closed by `now` — so REST holds a
+    closed bar the stream can no longer supply.
+
+    The websocket sends each hour's *whole* candle on every update, so if the only hour
+    since `start` is the one still forming, nothing was missed. Near the hour boundary,
+    where a slightly slow clock could be wrong about which hour is forming, assume one
+    has closed: fetching is always safe; skipping is only safe when sure.
+    """
+    forming = now // HOUR_MS * HOUR_MS
+    return start < forming or now - forming < CLOCK_SKEW_MARGIN_SECONDS * 1000
 
 
 async def _pump(messages: AsyncIterator[CandleMessage], buffer: asyncio.Queue) -> None:

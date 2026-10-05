@@ -59,7 +59,11 @@ def test_universe_keeps_listed_enabled_liquid_markets_across_core_and_xyz():
         return httpx.Response(200, json=[{"universe": markets}, contexts])
 
     feed, pacer = feed_answering(handler)
-    assert asyncio.run(feed.universe()) == ["BTC", "xyz:TSLA"]
+    universe = asyncio.run(feed.universe())
+    assert universe.tradeable == ["BTC", "xyz:TSLA"]
+    # Paused and thin markets are still listed, so still safe to subscribe to; a
+    # delisted one is not.
+    assert universe.listed == {"BTC", "THIN", "JUNK", "xyz:TSLA", "xyz:PAUSED"}
     assert pacer.spent == [20, 20]
 
 

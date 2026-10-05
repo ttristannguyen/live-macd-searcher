@@ -6,34 +6,30 @@ dropped.
 """
 
 import asyncio
-import math
 from collections import defaultdict
 
 import pytest
 
-from live_macd_searcher.detect.config import BACKFILL_BARS
+from live_macd_searcher.detect.config import BACKFILL_BARS, CLOCK_SKEW_MARGIN_SECONDS
+from live_macd_searcher.detect.symbol_state import SymbolState
 from live_macd_searcher.ingest.closer import CandleCloser
 from live_macd_searcher.ingest.feed import HOUR_MS, FeedDisconnected
-from live_macd_searcher.ingest.runner import Ingest
+from live_macd_searcher.ingest.runner import Ingest, _hour_closed_since
 from live_macd_searcher.market import Candle
-from tests.fakes import FakeFeed, NoMoreSessions, Session, partial, stream_hours
-from tests.pipeline import Pipeline
+from tests.fakes import (
+    FakeFeed,
+    NoMoreSessions,
+    Session,
+    partial,
+    stream_hours,
+    synthetic_history,
+)
 
 SYMBOLS = ["BTC", "xyz:GOLD"]
 HOURS = 700
 
 
-def synthetic_history(phase: float) -> list[Candle]:
-    candles, previous = [], 100.0
-    for hour in range(HOURS):
-        close = round(100 + 6 * math.sin(hour / 9 + phase) + 2.5 * math.sin(hour / 2.7), 2)
-        high, low = max(previous, close) + 0.3, min(previous, close) - 0.3
-        candles.append(Candle(hour * HOUR_MS, previous, high, low, close, 100.0 + hour))
-        previous = close
-    return candles
-
-
-HISTORY = {symbol: synthetic_history(phase) for phase, symbol in enumerate(SYMBOLS)}
+HISTORY = {symbol: synthetic_history(HOURS, phase) for phase, symbol in enumerate(SYMBOLS)}
 
 
 class Recorder:
@@ -47,11 +43,11 @@ class Recorder:
     def __init__(self) -> None:
         self.closed: dict[str, list[Candle]] = defaultdict(list)
         self.events: dict[str, list] = defaultdict(list)
-        self.pipelines = {symbol: Pipeline(symbol) for symbol in SYMBOLS}
+        self.states = {symbol: SymbolState(symbol) for symbol in SYMBOLS}
 
     def on_closed(self, symbol: str, candle: Candle) -> None:
         self.closed[symbol].append(candle)
-        self.events[symbol] += self.pipelines[symbol].step(candle)
+        self.events[symbol] += self.states[symbol].on_bar(candle)
 
 
 def drive(sessions: list[Session], **ingest_options) -> tuple[Recorder, FakeFeed]:
@@ -239,3 +235,35 @@ def test_a_bug_in_the_stream_surfaces_instead_of_being_retried():
     feed = BuggyFeed(HISTORY, [Session(450, [])])
     with pytest.raises(ValueError, match="a bug"):
         asyncio.run(Ingest(feed, SYMBOLS, lambda s, c: None, now_ms=feed.now_ms).run())
+
+
+# --- skipping REST when nothing was missed ------------------------------------------
+
+
+def test_a_reconnect_within_the_same_hour_fetches_nothing_and_misses_nothing():
+    uninterrupted, _ = drive([Session(now_hour=450, messages=stream_hours(HISTORY, 450, 460))])
+
+    # Drops mid-hour 455 and is back while 455 is still forming: the stream resends 455
+    # in full, so REST has nothing the stream can't supply.
+    interrupted, feed = drive([
+        Session(now_hour=450, messages=stream_hours(HISTORY, 450, 455, cut_after_partial=True)),
+        Session(now_hour=455, messages=stream_hours(HISTORY, 455, 460)),
+    ])  # fmt: skip
+
+    assert feed.requests[len(SYMBOLS):] == []  # only the cold start fetched
+    assert interrupted.closed == uninterrupted.closed
+
+
+@pytest.mark.parametrize(
+    ("seconds_into_hour", "fetch"),
+    [(30, True), (CLOCK_SKEW_MARGIN_SECONDS + 1, False), (3599, False)],
+)
+def test_near_the_hour_boundary_it_fetches_anyway(seconds_into_hour, fetch):
+    # Starting from the forming hour, nothing has closed — but only trust the clock on
+    # that once well clear of the boundary.
+    forming = 450 * HOUR_MS
+    assert _hour_closed_since(forming, forming + seconds_into_hour * 1000) is fetch
+
+
+def test_a_closed_hour_since_the_start_always_fetches():
+    assert _hour_closed_since(449 * HOUR_MS, 450 * HOUR_MS + 1_800_000)

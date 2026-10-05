@@ -6,21 +6,18 @@ from dataclasses import fields, replace
 
 import pytest
 
-from live_macd_searcher.detect.config import (
-    BACKFILL_BARS,
-    BAR_RETENTION_DAYS,
-    BOLLINGER_PERIOD,
-    BOLLINGER_WIDTH,
-)
-from live_macd_searcher.detect.detector import BarReading, WindowDetector
+from live_macd_searcher.detect.config import BACKFILL_BARS, BAR_RETENTION_DAYS
+from live_macd_searcher.detect.symbol_state import SymbolState
 from live_macd_searcher.detect.window import Window
-from live_macd_searcher.indicators.bollinger import BollingerState
-from live_macd_searcher.indicators.macd import MacdState
 from live_macd_searcher.market import Candle
 from live_macd_searcher.store.db import (
     DAY_MS,
     connect,
+    forget_bars,
+    live_symbols,
+    load_bars,
     prune_bars,
+    record_bar,
     upsert_bar,
     upsert_window,
 )
@@ -68,6 +65,7 @@ def test_connect_uses_wal_and_is_safe_to_repeat_on_every_boot(tmp_path):
     connect(path).close()
     again = connect(path)
     assert again.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert again.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
     again.close()
 
 
@@ -132,6 +130,43 @@ def test_windows_with_different_peaks_are_different_rows(conn):
     assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 3
 
 
+def test_record_bar_writes_the_bar_and_its_windows_together(conn):
+    candle = Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0)
+    record_bar(conn, "BTC", candle, [WINDOW])
+    assert load_bars(conn, "BTC") == [candle]
+    assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 1
+
+
+def test_record_bar_is_atomic_a_bad_window_rolls_back_its_bar(conn):
+    # A crash or a failed write must never leave a bar stored without its windows: a
+    # restart replays stored bars without writing, trusting their windows are stored.
+    with pytest.raises(sqlite3.IntegrityError):
+        record_bar(conn, "BTC", Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0),
+                   [replace(WINDOW, state="forming")])  # fmt: skip
+    assert load_bars(conn, "BTC") == []
+
+
+def test_load_bars_returns_one_symbol_oldest_first(conn):
+    for hour in (3, 1, 2):
+        upsert_bar(conn, "BTC", Candle(hour * HOUR, 1.0, 1.0, 1.0, float(hour), 1.0))
+    upsert_bar(conn, "ETH", Candle(HOUR, 1.0, 1.0, 1.0, 1.0, 1.0))
+    assert [bar.close for bar in load_bars(conn, "BTC")] == [1.0, 2.0, 3.0]
+
+
+def test_live_symbols_are_those_with_active_or_crossed_windows(conn):
+    upsert_window(conn, WINDOW)  # BTC, active
+    upsert_window(conn, replace(WINDOW, symbol="ETH", state="crossed"))
+    upsert_window(conn, replace(WINDOW, symbol="SOL", state="hit"))
+    assert live_symbols(conn) == {"BTC", "ETH"}
+
+
+def test_forget_bars_keeps_the_windows(conn):
+    record_bar(conn, "BTC", Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0), [WINDOW])
+    forget_bars(conn, "BTC")
+    assert load_bars(conn, "BTC") == []
+    assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 1
+
+
 # --- retention ---------------------------------------------------------------------
 
 
@@ -158,18 +193,10 @@ for i in range(BACKFILL_BARS + 400):
 
 
 def run(conn, candles, symbol="BTC"):
-    """What the runtime will do (M5): indicators, detector, store — from a cold start."""
-    macd, bands = MacdState(), BollingerState(BOLLINGER_PERIOD, BOLLINGER_WIDTH)
-    detector = WindowDetector(symbol)
+    """What the runtime does (M5): a symbol's state, then the store — from a cold start."""
+    state = SymbolState(symbol)
     for candle in candles:
-        point = macd.update(candle.close)
-        reading = BarReading(
-            candle.open_time, candle.high, candle.low, candle.close,
-            point.macd, point.signal, point.hist, bands.update(candle.close),
-        )  # fmt: skip
-        upsert_bar(conn, symbol, candle)
-        for event in detector.step(reading):
-            upsert_window(conn, event.window)
+        record_bar(conn, symbol, candle, [event.window for event in state.on_bar(candle)])
 
 
 def test_the_replay_fixture_is_not_vacuous(conn):

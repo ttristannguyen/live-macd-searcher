@@ -6,7 +6,7 @@ drive everything from a scripted fake with no network — not for a second excha
 
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from ..market import Candle
 
@@ -14,6 +14,11 @@ HOUR_MS = 3_600_000
 
 # One websocket update: the symbol and its whole current candle.
 CandleMessage = tuple[str, Candle]
+
+
+class Universe(NamedTuple):
+    tradeable: list[str]  # listed, enabled, and above the liquidity floors: watch these
+    listed: frozenset[str]  # every name the exchange lists: the only ones safe to subscribe to
 
 
 class FeedError(ConnectionError):
@@ -26,12 +31,13 @@ class FeedDisconnected(FeedError):
 
 
 class MarketFeed(Protocol):
-    async def universe(self) -> list[str]:
-        """Symbols worth watching today: listed, enabled, and above the liquidity floors."""
+    async def universe(self) -> Universe:
+        """What is worth watching today, and what may be subscribed to at all."""
         ...
 
     async def candles(self, symbol: str, start_ms: int, end_ms: int) -> list[Candle]:
-        """1h candles with `open_time` in `[start_ms, end_ms]`, oldest first.
+        """1h candles overlapping `[start_ms, end_ms]`, oldest first — including one
+        that opened before `start_ms`, as Hyperliquid returns them.
 
         The last one may still be forming; `CandleCloser` decides, not the caller.
         """
