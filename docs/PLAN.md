@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M6 — API
+**Now:** M7 — Stream
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -156,20 +156,29 @@ post-warm-up shrink steps, so the first can open at the second rollover.
 
 ---
 
-## M6 — API
+## M6 — API ✅ (2026-10-05)
 
 Blocked by: M5
 
-- [ ] `web/models.py` — response shapes; `asset_class`, `side`, `regime`, `band`, `state` as `Literal` types
-- [ ] `web/queries.py` — all SQL, each query restating its own `SELECT`
-- [ ] `GET /api/windows` with `state` / `asset_class` / `side` / `regime` / `band` / `min_strength` / `min_bars` / `limit`; defaults to `active` + `crossed`
-- [ ] `GET /api/windows/{id}` — window plus bar-by-bar trace, through the cross to resolution
-- [ ] `GET /api/symbols/{symbol}/series` — OHLC + Bollinger middle/upper/lower + macd/signal/hist
-- [ ] `GET /api/health` — websocket connected and last message time, last refresh, warm vs warming counts, REST 429 count
-- [ ] Test: bad `state`, `asset_class`, `side`, `regime`, or `band` returns 422 before any SQL runs
+- [x] `web/models.py` — response shapes; `asset_class`, `side`, `regime`, `band`, `state` reuse the `Literal` types from `detect/vocabulary.py`; `WindowOut` held to the stored window's fields by a test
+- [x] `web/queries.py` — the web layer's SQL, each query restating its own `SELECT`; every filter value a parameter
+- [x] `GET /api/windows` with `state` / `asset_class` / `side` / `regime` / `band` (each repeatable) / `min_strength` / `min_bars` / `limit`; defaults to `active` + `crossed`, ranked by strength; carries the health `status` and `as_of`
+- [x] `GET /api/windows/{id}` — window plus bar-by-bar trace from the peak through the latest bar applied, and `trace_complete` once retention prunes
+- [x] `GET /api/symbols/{symbol}/series` — OHLC + Bollinger middle/upper/lower + macd/signal/hist, recomputed from all stored bars (`web/series.py`)
+- [x] `GET /api/health` — `starting` / `ok` / `stale` / `failed` with reasons; streaming, last message and refresh ages, newest-bar age, warm vs warming, REST 429s and weight spent (`web/health.py`, pure)
+- [x] The detector runs in the app's lifespan; if it stops, health says `failed` and the process exits non-zero for systemd to restart
+- [x] Every request reads through a `mode=ro` connection: no endpoint can write
+- [x] `live-macd-searcher` / `python -m live_macd_searcher` runs detector + web on `127.0.0.1:8001`
+- [x] Test: bad `state`, `asset_class`, `side`, `regime`, or `band` returns 422 before any SQL runs — proved with a spy connection that records every `execute`
 
 **Done when:** illegal input is impossible to express and health honestly reports a stale
-feed rather than serving stale windows silently.
+feed rather than serving stale windows silently. — met: 203 passed. Five planted bugs
+(vocabulary loosened to `str`, a writable web connection, a chart recomputed from recent
+bars only, a stale bar not reported, a crashed detector ignored) each turned a test red.
+Charted values equal the stored windows' to the last bit. Live: the real app on the
+smoke database reported `starting` then `ok` within ~3 s of boot (gap-filling 7 of 169
+symbols), served `xyz:GOLD` series, and answered a bad `side` with 422 — bound to
+127.0.0.1 only.
 
 ---
 

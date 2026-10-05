@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-# Headless for now (M5); M6 runs the same runtime inside the web app.
+# The detector and the web app, in one process (DESIGN §5).
 live-macd-searcher = "live_macd_searcher.__main__:cli"
 
 [dependency-groups]

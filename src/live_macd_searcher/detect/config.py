@@ -100,6 +100,13 @@ REST_TIMEOUT_SECONDS = 15
 # so it fetches. The droplet's clock is NTP-synced to well under a second.
 CLOCK_SKEW_MARGIN_SECONDS = 60
 
+# Health (DESIGN §8). The feed is stale if no websocket message has arrived for this
+# long — BTC alone trades every few seconds, so two minutes of silence means trouble —
+# or if the newest closed bar is older than this many hours: one closes every hour, so
+# two allows for a slow close without hiding a stopped one.
+FEED_STALE_SECONDS = 120
+BAR_STALE_HOURS = 2
+
 # Reconnect backoff doubles from 1 s up to this, so an exchange outage is retried about
 # once a minute rather than hammered.
 RECONNECT_MAX_BACKOFF_SECONDS = 60

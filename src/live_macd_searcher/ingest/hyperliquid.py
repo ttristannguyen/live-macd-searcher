@@ -63,6 +63,10 @@ class HyperliquidFeed:
         self._sleep = sleep
         self.rate_limited = 0  # 429s received; reported in /api/health
 
+    @property
+    def weight_spent(self) -> int:
+        return self.pacer.total_spent
+
     # --- REST --------------------------------------------------------------------------
 
     async def universe(self) -> Universe:

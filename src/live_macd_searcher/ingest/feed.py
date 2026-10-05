@@ -31,6 +31,13 @@ class FeedDisconnected(FeedError):
 
 
 class MarketFeed(Protocol):
+    rate_limited: int  # 429s received, for /api/health
+
+    @property
+    def weight_spent(self) -> int:
+        """REST weight spent since start, for /api/health."""
+        ...
+
     async def universe(self) -> Universe:
         """What is worth watching today, and what may be subscribed to at all."""
         ...

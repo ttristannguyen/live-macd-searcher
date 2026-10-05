@@ -537,6 +537,22 @@ models, so FastAPI rejects anything else with a 422 before it reaches any SQL �
 hand-written guards. `xyz:TSLA` contains a colon, which is legal in a path segment;
 the UI still `encodeURIComponent`s it.
 
+- **One process, one writer.** The detector runs inside the app's lifespan. Every
+  request reads through its own SQLite connection opened `mode=ro`, so no endpoint
+  *can* write — the guardrail is enforced by the database, not by convention.
+- **Indicator values are recomputed, not stored.** Series and window traces rerun the
+  indicators over *all* of a symbol's stored bars — the same earliest bar the runtime
+  seeds from — so a chart agrees with the board to the last bit (tested).
+- **Health is honest.** `starting` until the first gap-fill completes; `stale`, with
+  reasons in plain words, if the stream is reconnecting, silent for
+  `FEED_STALE_SECONDS`, or the newest closed bar is over `BAR_STALE_HOURS` old;
+  `failed` if the detector has stopped; otherwise `ok`. `/api/windows` carries the
+  same status beside the windows, so a stale board is never served silently.
+- **A stopped detector stops the process.** If the detector task ends for any reason,
+  health turns `failed`, it is logged as critical, and the process exits non-zero so
+  systemd restarts it — a page over a dead detector would show frozen windows as live.
+  Exiting hard is safe because every write is atomic (§6).
+
 SSE rather than a WebSocket: the traffic is one-way server-to-client, and SSE reconnects
 by itself. If the UI ever needs to talk back, that is when to reconsider. The stream
 sends a comment every 30 seconds so idle connections survive the proxy (§13). On every

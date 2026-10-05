@@ -56,6 +56,8 @@ class Ingest:
         self.streaming = False  # gap-fill done and the live stream flowing
         self.last_session_streamed = False  # a session that got that far resets the backoff
         self._buffer: asyncio.Queue | None = None  # the current session's, while one runs
+        self.has_streamed = False  # any session has finished its gap-fill: past starting up
+        self.last_message_at: float | None = None  # wall clock, for health only
 
     def resubscribe(self, symbols: list[str]) -> None:
         """Change the subscription list. The current session ends, and `run()` reconnects
@@ -93,11 +95,12 @@ class Ingest:
             pump = asyncio.create_task(_pump(messages, buffer))
             try:
                 await self._gap_fill()
-                self.streaming = self.last_session_streamed = True
+                self.streaming = self.last_session_streamed = self.has_streamed = True
                 while True:
                     item = await buffer.get()
                     if isinstance(item, BaseException):
                         raise item
+                    self.last_message_at = time.time()
                     self._offer(*item)
             finally:
                 self.streaming = False

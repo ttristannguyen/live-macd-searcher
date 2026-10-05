@@ -58,6 +58,8 @@ class FakeFeed:
         self.sessions = list(sessions)
         self.now_hour = sessions[0].now_hour
         self.requests: list[tuple[str, int, int]] = []  # every candles() call
+        self.rate_limited = 0
+        self.weight_spent = 0
 
     def now_ms(self) -> int:
         return self.now_hour * HOUR_MS + HOUR_MS // 2  # mid-hour

@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from .detect.config import BAR_RETENTION_DAYS, REFRESH_INTERVAL_MIN
 from .detect.symbol_state import Provisional, SymbolState
@@ -23,6 +24,21 @@ from .store.db import DAY_MS, forget_bars, live_symbols, load_bars, prune_bars, 
 log = logging.getLogger(__name__)
 
 DAY_SECONDS = 86_400
+
+
+@dataclass(frozen=True)
+class RuntimeStatus:
+    """What /api/health needs to judge the feed. Times are wall clock (`time.time()`)."""
+
+    booted: bool
+    streamed: bool  # a gap-fill has completed at least once: past starting up
+    streaming: bool  # right now
+    last_message_at: float | None
+    last_refresh_at: float | None
+    symbols: int
+    warm: int
+    rest_429s: int
+    rest_weight_spent: int
 
 
 class Runtime:
@@ -41,6 +57,21 @@ class Runtime:
         self.states: dict[str, SymbolState] = {}  # the only shared state
         self.provisional: dict[str, Provisional] = {}  # latest forming-bar readings
         self.ingest: Ingest | None = None  # created by boot()
+        self.last_refresh_at: float | None = None
+
+    def status(self) -> RuntimeStatus:
+        ingest = self.ingest
+        return RuntimeStatus(
+            booted=ingest is not None,
+            streamed=ingest is not None and ingest.has_streamed,
+            streaming=ingest is not None and ingest.streaming,
+            last_message_at=ingest.last_message_at if ingest is not None else None,
+            last_refresh_at=self.last_refresh_at,
+            symbols=len(ingest.symbols) if ingest is not None else 0,
+            warm=sum(not state.warming for state in self.states.values()),
+            rest_429s=self.feed.rate_limited,
+            rest_weight_spent=self.feed.weight_spent,
+        )
 
     async def run(self) -> None:
         await self.boot()
@@ -71,6 +102,7 @@ class Runtime:
             reading = state.peek(forming) if state is not None else None
             if reading is not None:
                 self.provisional[symbol] = reading
+        self.last_refresh_at = time.time()
 
     async def daily(self) -> None:
         """Prune old bars, and follow the universe as it changes."""
