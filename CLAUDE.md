@@ -62,8 +62,8 @@ These are not preferences. Breaking one is a bug even if every test passes.
    readings and nothing else. A candle is closed when the exchange has sent a later one,
    not when our clock says the hour is up.
 2. **Exchange time is the only clock.** Bar logic keys off the candle's `open_time`.
-   `datetime.now()` belongs in refresh scheduling, REST pacing, and health reporting and
-   nowhere else.
+   The wall clock belongs in refresh scheduling, REST pacing and request ranges, and
+   health reporting, and nowhere else. It never decides anything about a bar.
 3. **Normalise before comparing.** Anything ranked, thresholded, or shown beside another
    symbol is a percentage of close, or (for Bollinger position) in band widths. Raw
    price-unit values never cross symbol boundaries.

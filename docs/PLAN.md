@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M4 — Ingest
+**Now:** M5 — Runtime wiring
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -89,30 +89,39 @@ replay test red (a full replay alone would not have caught it).
 
 ---
 
-## M4 — Ingest (Hyperliquid)
+## M4 — Ingest (Hyperliquid) ✅ (2026-10-05)
 
-Blocked by: M3. D1 is decided (Hyperliquid), so nothing here waits on a decision.
-`MarketFeed` + `FakeFeed` come first; the live client follows. Reuse what already works
-in `macd_searcher/hyperliquid.py`: the request shapes, the `growthMode` / delisted
-filters, and retry-with-backoff on 429 and 5xx.
+Blocked by: M3. Reuses `macd_searcher/hyperliquid.py`'s request shapes, `growthMode` /
+delisted filters, and retry-with-backoff on 429 and 5xx.
 
-- [ ] `MarketFeed` Protocol — `universe()`, `candles(symbol, start, end)` (REST), `stream(symbols)` (websocket candle messages)
-- [ ] `FakeFeed` — scripted websocket messages and REST responses, no network
-- [ ] REST pacer: every REST call goes through it; never more than `REST_WEIGHT_PER_MIN` (weight 20 per call plus `candleSnapshot`'s per-60-items surcharge)
-- [ ] Universe: `metaAndAssetCtxs` for core and `xyz`, both liquidity floors, refreshed daily; a symbol leaving the universe stays subscribed until its live windows resolve
-- [ ] Backfill: `BACKFILL_BARS` per symbol
-- [ ] Websocket: one connection, `candle` / `1h` subscription per symbol, ping every `WS_PING_SECONDS`
-- [ ] Closedness: a held candle closes when a later `open_time` arrives for that symbol; **closed bars only** reach the detector
-- [ ] Refresh every `REFRESH_INTERVAL_MIN`: `peek()` the held forming candle, tag `provisional`, never persist
-- [ ] Reconnect: subscribe and buffer → paced REST gap-fill since last processed `open_time` → drain buffer; re-seed to `warming` if the gap exceeds the ring buffer; backoff between attempts
-- [ ] Out-of-order guard: ignore any bar whose `open_time` is not strictly greater than the last processed
-- [ ] `scripts/smoke_hyperliquid.py` — subscribe to one core and one `xyz:` symbol and print a rollover, so a change in the live API shows up before a deploy, not after
-- [ ] Test (`FakeFeed`): a disconnect mid-hour, with overlapping gap-fill and buffered messages, gives the same windows as an uninterrupted run
-- [ ] Test: the pacer never exceeds its budget in any minute (fake clock)
+- [x] `MarketFeed` Protocol — `universe()`, `candles(symbol, start, end)` (REST), and ~~`stream(symbols)`~~ `connect(symbols)`: a context manager that returns only once Hyperliquid has *confirmed* every subscription, so a REST gap-fill started afterwards can't leave a hole
+- [x] `FakeFeed` (`tests/fakes.py`) — one true price history served as REST (as of a session's `now_hour`) and as scripted websocket sessions; returns candles *overlapping* a range, as the real API does
+- [x] REST pacer: every REST call — retries included — goes through it; never more than `REST_WEIGHT_PER_MIN` (weight 20 per call plus `candleSnapshot`'s per-60-items surcharge, rounded up)
+- [x] Universe: `metaAndAssetCtxs` for core and `xyz`, not delisted, `growthMode` enabled, both liquidity floors. *Daily refresh, and keeping a symbol subscribed until its windows resolve, are scheduling: M5*
+- [x] Backfill: exactly `BACKFILL_BARS` closed bars per symbol on a cold start (hour-aligned range)
+- [x] Websocket: one connection, `candle` / `1h` subscription per symbol, ping every `WS_PING_SECONDS` whether or not data flows
+- [x] Closedness: `CandleCloser` holds the latest snapshot and releases it only when a later `open_time` arrives; same-hour snapshots keep the larger volume, so REST and websocket can be mixed in any order; **closed bars only** reach `on_closed`
+- [ ] ~~Refresh every `REFRESH_INTERVAL_MIN`~~ → M5. The closer holds the forming candles; the timer and `peek()` belong to `SymbolState`
+- [x] Reconnect: subscribe (confirmed) and buffer → paced REST gap-fill from the hour that was forming at the drop → drain buffer; backoff 1 s doubling to `RECONNECT_MAX_BACKOFF_SECONDS`, reset after a healthy session. Only `FeedError` is retried — a bug propagates. *Re-seeding a symbol after an unfillable gap (> 5,000 h) → M5*
+- [x] Out-of-order guard: the closer ignores closed hours; the detector (M2) ignores any bar not strictly after the last
+- [x] `scripts/smoke_hyperliquid.py` — 30 s of live candles for one core and one `xyz:` symbol; `--warm` runs the live gate below
+- [x] Test (`FakeFeed`): a disconnect mid-hour, with a stale message and overlapping gap-fill and buffered messages, gives the same bars and windows per symbol as an uninterrupted run
+- [x] Test: the pacer never exceeds its budget in any minute (fake clock)
+
+Probed on the live API 2026-10-05 (recorded in `ingest/hyperliquid.py` and DESIGN §6):
+candle prices arrive as strings; there's no snapshot on subscribe; `xyz:` symbols work on
+the websocket; one unlisted coin drops the *whole* connection; `candleSnapshot` returns
+every candle overlapping the range; and an hour with no trades has no candle at all (D13).
 
 **Done when:** `FakeFeed` drives the whole pipeline offline and deterministically, and the
 live feed warms the full universe without a single window emitted during warm-up and
-without a single REST 429.
+without a single REST 429. — met: 145 passed offline; eight planted ingest bugs each
+turned a test red. Live (from a desktop IP, not the droplet's): 165 symbols (99 core,
+66 `xyz`) warmed in 7.1 min at 600 weight/min, **0 REST 429s, 0 windows** with a peak
+before warm-up ended. 162 symbols got exactly 400 bars; `xyz:HO` (newly listed, 98) stays
+`warming`; `xyz:JPY` and `xyz:EWZ` got 399 — each missing an hour with no trades (D13).
+An earlier run, with ranges not yet hour-aligned, showed one symbol at 402 closed bars;
+the overlap behaviour explains 401, not 402, and it did not reproduce once aligned.
 
 ---
 
@@ -120,7 +129,10 @@ without a single REST 429.
 
 Blocked by: M4
 
-- [ ] `SymbolState` — ring buffer + `EmaState` + Bollinger + `WindowDetector`, one per symbol; `on_bar()` commits, `peek()` does not
+- [ ] `SymbolState` — ring buffer + `EmaState` + Bollinger + `WindowDetector`, one per symbol; `on_bar()` commits, `peek()` does not (replaces `tests/pipeline.py`)
+- [ ] Refresh every `REFRESH_INTERVAL_MIN`: `peek()` each held forming candle (`Ingest.closer.forming`), tag `provisional`, never persist
+- [ ] Daily universe refresh; a symbol below the floors stays subscribed while it has live windows — but only while still listed (DESIGN §6)
+- [ ] Re-seed a symbol to `warming` if its first bar after a gap REST could not fill is discontinuous
 - [ ] Nightly `prune_bars()`
 - [ ] Boot sequence: load `bars` → rebuild state → backfill the gap → reconcile `active` and `crossed` windows → stream goes live
 - [ ] Single asyncio loop; `dict[str, SymbolState]` as the only shared state
@@ -233,6 +245,7 @@ Open questions from DESIGN §12. Tick when settled, and record the answer inline
 - [ ] **D6 — Should `near` outrank `through`?** Currently `through` slightly. Awaiting M10. → _answer:_
 - [ ] **D7 — Is `POST_CROSS_BARS = 24` the right horizon?** Awaiting M10. → _answer:_
 - [ ] **D12 — Is `MIN_PEAK_PCT = 0.15` gating out evidence?** Evidence (2026-10-05, M1+M2 run over 5,000 real 1h bars of BTC, ETH, SOL, HYPE, xyz:TSLA, xyz:GOLD with the gate off, ~2,850 resolved windows): the gate drops about half of all windows (median abs(peak) 0.14%), yet hit and cross rates are flat across peak size — <0.05%: 30% hit; 0.15–0.25%: 26%; ≥0.5%: 32%. One sample, six symbols, no baseline yet. Options: keep 0.15, lower to ~0.05 (drops only the smallest ~15%), or remove. → _answer:_
+- [ ] **D13 — Hours with no trades.** Hyperliquid sends no candle for an hour with no trades (seen 2026-10-05: `xyz:JPY` and `xyz:EWZ` each missing one hour in 400). Today the series simply skips it, so EMAs treat the next bar as consecutive and `bars` / `POST_CROSS_BARS` compress time for thin markets. Alternative: fill the hour with a flat, zero-volume bar at the previous close — the hour happened; price didn't move. Lean: fill. → _answer:_
 - [x] **D8 — Timeframe and cadence.** → _answer (2026-10-04):_ 1-hour bars, provisional refresh every 10 minutes. Only closed hourly bars move windows. Replaces the original 5-minute design. (First written as REST polling; moved to a websocket by D1.)
 - [x] **D9 — What happens after a cross?** → _answer (2026-10-04):_ follow the window until it reaches the target band (`hit`), the histogram flips back (`reversed`), or `POST_CROSS_BARS` pass (`expired`).
 - [x] **D10 — Bollinger Bands' role.** → _answer (2026-10-04):_ a first-class `band` field (`far` / `near` / `through` the middle band), filterable, and a score multiplier like regime. Not a gate.

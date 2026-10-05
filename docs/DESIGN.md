@@ -347,10 +347,15 @@ This is the part that actually breaks live scanners, so it gets its own section.
   full current candle for one symbol. The app holds the latest one; when a message
   arrives with a later `open_time`, the held candle is closed and goes to the detector.
   A symbol with no trades early in the new hour therefore closes its previous bar late,
-  never early. Our clock is never asked whether the hour is over.
+  never early. Our clock is never asked whether the hour is over. REST responses go
+  through the same `CandleCloser`: their newest candle is held, not closed. When two
+  snapshots of one hour meet — a REST gap-fill and a buffered websocket message — the
+  one with more volume wins, because volume only grows within an hour; that makes their
+  arrival order irrelevant.
 - **Exchange time is the only clock.** Every bar is keyed by the exchange's `open_time`
-  (`t` in the candle payload). The wall clock schedules refreshes and reports "how
-  stale is the feed" in health; it never appears in bar logic.
+  (`t` in the candle payload). The wall clock schedules refreshes, paces REST, picks the
+  range a REST request asks for, and reports "how stale is the feed" in health; it never
+  decides anything about a bar.
 - **Warm-up.** `BACKFILL_BARS = 400`. EMA(26) has alpha ≈ 0.074, so seeding error decays
   by about `e^-0.077` per bar and is below floating-point noise after ~300 bars — and
   the second EMA layer (signal) needs its input already converged. Bollinger needs only
@@ -360,12 +365,15 @@ This is the part that actually breaks live scanners, so it gets its own section.
   half-converged EMA generates plausible-looking garbage, which is worse than silence.
   A newly listed market simply stays `warming` until it has the history.
 - **Reconnects.** Hyperliquid drops a connection that has sent nothing for 60 seconds,
-  so the client pings every `WS_PING_SECONDS`. On reconnect: subscribe first and buffer
-  incoming messages, then REST-fetch candles since each symbol's last processed
-  `open_time`, replay the closed ones, then drain the buffer. The out-of-order guard
-  below makes the overlap harmless. If a symbol's gap is larger than the ring buffer, it
-  drops back to `warming` and re-seeds from scratch rather than splicing. Reconnect
-  attempts back off; a feed that stays down shows as stale in `/api/health`.
+  so the client pings every `WS_PING_SECONDS`. On reconnect: subscribe, and wait until
+  Hyperliquid has *confirmed* every subscription, buffering incoming messages; then
+  REST-fetch each symbol from the hour that was forming when the connection dropped (or
+  from its last processed bar); replay the closed ones; then drain the buffer. The closer
+  and the out-of-order guard below make the overlap harmless. REST can serve the last
+  5,000 candles, so only an outage longer than that leaves a hole — then the symbol
+  drops back to `warming` and re-seeds from scratch rather than splicing (M5). Reconnect
+  attempts back off from 1 s to `RECONNECT_MAX_BACKOFF_SECONDS`; a feed that stays down
+  shows as stale in `/api/health`.
 - **REST is paced.** Every REST call — universe refresh, warm-up, gap-fill — goes
   through one pacer capped at `REST_WEIGHT_PER_MIN`, so a cold start or a reconnect of
   the whole universe can never starve `macd_searcher` on the shared IP (§5). A 429 is
@@ -379,8 +387,11 @@ This is the part that actually breaks live scanners, so it gets its own section.
 - **Universe refresh.** Once a day, `metaAndAssetCtxs` for the core DEX and for `xyz`
   rebuilds the universe: not delisted, `growthMode` enabled where present, and above
   both liquidity floors (`MIN_DAY_VOLUME_USD`, `MIN_OPEN_INTEREST_USD`). A symbol that
-  drops out stays subscribed until every live window on it has resolved — invariant 5
-  outranks tidiness.
+  falls below the floors stays subscribed until every live window on it has resolved —
+  invariant 5 outranks tidiness. But only while Hyperliquid still lists it: subscribing
+  to a name it doesn't list drops the *whole* connection (observed 2026-10-05). A live
+  window on a symbol that is delisted outright can't get the bars it needs to resolve;
+  it is left as it stands and flagged in `/api/health`, not resolved by guesswork.
 
 ### `xyz` markets
 

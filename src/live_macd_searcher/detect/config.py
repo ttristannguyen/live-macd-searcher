@@ -81,3 +81,17 @@ REST_WEIGHT_PER_MIN = 600
 
 # Hyperliquid drops a websocket that has sent nothing for 60 seconds.
 WS_PING_SECONDS = 50
+
+# How long to wait for Hyperliquid to confirm every subscription before treating the
+# connection as failed. Confirmations arrive within a second in practice.
+WS_SUBSCRIBE_TIMEOUT_SECONDS = 30
+
+# Attempts per REST request on a 429, a 5xx, or a network error, backing off 1 s, 2 s
+# between them, as macd_searcher does. Every attempt is paced, so retrying can never
+# push past REST_WEIGHT_PER_MIN.
+REST_ATTEMPTS = 3
+REST_TIMEOUT_SECONDS = 15
+
+# Reconnect backoff doubles from 1 s up to this, so an exchange outage is retried about
+# once a minute rather than hammered.
+RECONNECT_MAX_BACKOFF_SECONDS = 60
