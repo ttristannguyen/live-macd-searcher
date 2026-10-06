@@ -87,6 +87,16 @@ def test_filters(client, query, check):
     assert all(check(w) for w in windows)
 
 
+def test_order_recent_puts_the_latest_news_first(client):
+    windows = client.get("/api/windows?state=hit&state=failed&order=recent").json()["windows"]
+    updated = [w["updated_at"] for w in windows]
+    assert updated == sorted(updated, reverse=True)
+
+
+def test_an_unknown_order_is_rejected(client):
+    assert client.get("/api/windows?order=random").status_code == 422
+
+
 def test_limit(client):
     assert len(client.get("/api/windows?state=failed&limit=3").json()["windows"]) == 3
 

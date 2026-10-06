@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The palette: warm paper and ink by day, the same instrument at night. RGB triplets so
+   Tailwind can apply opacity (`bg-bull/10`). */
+:root {
+  --paper: 246 243 236;
+  --card: 255 253 248;
+  --ink: 28 25 23;
+  --muted: 120 113 108;
+  --line: 229 223 211;
+  --bull: 15 118 110;
+  --bear: 190 18 60;
+  --accent: 180 83 9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: 18 17 15;
+    --card: 28 27 24;
+    --ink: 236 232 223;
+    --muted: 160 154 143;
+    --line: 54 51 46;
+    --bull: 45 212 191;
+    --bear: 251 113 133;
+    --accent: 251 191 36;
+  }
+}
+
+body {
+  @apply bg-paper text-ink antialiased;
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Numbers line up in columns and don't jiggle as they update live. */
+.num {
+  font-variant-numeric: tabular-nums;
+}

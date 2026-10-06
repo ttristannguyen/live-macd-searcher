@@ -6,8 +6,15 @@ passed as a parameter — never formatted into the SQL text.
 
 import sqlite3
 from collections.abc import Sequence
+from typing import Literal
 
 from ..market import Candle
+
+# Fixed SQL for each allowed order, so the caller's choice never becomes SQL text.
+ORDER_BY = {
+    "strength": "strength DESC, updated_at DESC",  # the live board: strongest first
+    "recent": "updated_at DESC, id DESC",  # newest news first: what just resolved
+}
 
 
 def board(
@@ -21,6 +28,7 @@ def board(
     min_strength: float,
     min_bars: int,
     limit: int,
+    order: Literal["strength", "recent"] = "strength",
 ) -> list[sqlite3.Row]:
     clauses, params = ["strength >= ?", "bars >= ?"], [min_strength, min_bars]
     for column, values in (
@@ -36,7 +44,7 @@ def board(
     sql = f"""
         SELECT * FROM windows
         WHERE {" AND ".join(clauses)}
-        ORDER BY strength DESC, updated_at DESC
+        ORDER BY {ORDER_BY[order]}
         LIMIT ?
     """
     return conn.execute(sql, [*params, limit]).fetchall()

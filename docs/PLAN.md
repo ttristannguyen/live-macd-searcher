@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M8 — UI
+**Now:** M9 — Run it permanently
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -203,20 +203,30 @@ test red.
 
 ---
 
-## M8 — UI
+## M8 — UI ✅ (2026-10-06)
 
-Blocked by: M7
+Blocked by: M7. Same toolchain as `macd_searcher` (React 18, Vite, TypeScript, Tailwind 3),
+a deliberately different look: the **Contraction Board** — light "paper and ink" by
+default, dark when the system asks — built to explain the app as much as to show it.
+No `react-query` or chart library: the stream drives the data, and charts are SVG.
 
-- [ ] `ui/api/` — typed client for the endpoints and the SSE stream
-- [ ] `ui/components/` — window row, strength badge, regime chip, band chip, price panel with Bollinger Bands, MACD panel; window shaded and cross marked on both
-- [ ] `ui/pages/` — the board: a contracting group (`active`, by strength) and a following group (`crossed`, with bars since cross, excursions, distance to target); filters for asset class, side, regime, and band
-- [ ] Rows update in place from the stream; **nothing polls**
-- [ ] On stream reconnect, refetch `/api/windows` — events missed while disconnected are gone
-- [ ] Vite dev server proxies `/api` to `127.0.0.1:8001`; production build served same-origin by FastAPI from `ui/dist`
-- [ ] Provisional readings shown dimmed and visibly distinct from confirmed ones
+- [x] `ui/api/` — typed client, and `useLiveBoard()`: fetch on every (re)connect, then the stream; a refetch never undoes an event that arrived while it was in flight
+- [x] `ui/components/` — header (purpose in one sentence, health, as-of bar, next close), "How a window works" in four steps, filters, window card (strength ring, "unwound since the peak" meter, bar *n* of 24, distance to target, excursions, chips), price panel with Bollinger Bands (target band heavier) and MACD panel, window shaded and cross marked on both; "Just resolved" strip (deliberately no hit rates); an error boundary so a render error says so instead of a blank page
+- [x] `ui/pages/` — the board: a contracting lane and a following lane, each its strongest 8 with the rest a click away (a third of the universe can be shrinking at once); filters for asset class, side, regime, and band
+- [x] Rows update in place from the stream; **nothing polls** — health arrives on the stream's heartbeat (`health` events, M7 extended), and `/api/windows?order=recent` feeds the resolved strip
+- [x] On stream reconnect, refetch — events missed while disconnected are gone
+- [x] Vite dev server proxies `/api` to `127.0.0.1:8001`; production build served same-origin by FastAPI from `ui/dist`
+- [x] Provisional readings shown dimmed, labelled, and only when from a bar after the last one applied
 
 **Done when:** the board runs for an hour without a manual refresh and without a single
-row repainting its history.
+row repainting its history. — met: the real page in headless Edge for 60 minutes across
+the 14:00 rollover, sampled every 5 minutes — never reloaded, lane counts identical to the
+API at all 12 samples (55/48 before the rollover, 46/55 after), the as-of bar advancing
+12:00 → 1:00 pm on its own; 115 window events over 114 windows with **0** history
+repaints (peaks fixed, bars/strength/regime frozen after the cross, states only forward,
+nothing changed after resolving) and **0** page exceptions. Getting there took three
+harness fixes, none in the app: the first hour's "blank page" was the harness navigating
+to the URL "60" (its minutes argument, misread as the URL).
 
 ---
 
@@ -254,6 +264,7 @@ Blocked by: M9 **and at least three weeks of stored windows.**
 - [ ] Compare realised cross and hit rates against the `strength` score
 - [ ] Retune `WEIGHTS`, `REGIME_MULTIPLIER`, and `BAND_MULTIPLIER` from the data; record what changed and why
 - [ ] Revisit D3, D6, D7, and D12 with evidence
+- [ ] Does strength discriminate? On the first live board (2026-10-06) many windows scored 96–100: with decay high and persistence saturated, the product hits the clamp. Check the spread of stored strengths against outcomes before retuning
 - [ ] Baseline for `hit`: how often does price touch the outer band within `POST_CROSS_BARS` from *any* bar? Without it, a hit rate can't be read as an edge (the M2 sample showed ~65% hit given a cross — meaningless until compared)
 - [ ] Split `xyz` outcomes by whether the window opened while the venue was shut (from `started_at`); revisit the dropped market-hours guard (DESIGN §11) if those resolve noticeably worse
 

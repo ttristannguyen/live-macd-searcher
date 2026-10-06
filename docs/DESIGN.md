@@ -570,12 +570,22 @@ its throughput (within run-to-run noise at one), a hundred cost 16%, stalled one
 almost nothing — against a need of ~166 bars an hour, cleared in ~0.05 s at any of
 those rates.
 
-The UI is one screen: a live board with two groups — **contracting** (`active`, sorted
-by strength) and **following** (`crossed`, showing bars since the cross, excursions,
-and distance to target). Filterable by asset class, side, regime, and band. Each row expands into a
-price panel with the Bollinger Bands and a MACD panel beneath, the window shaded on both
-and the cross marked. Rows update in place from the stream; nothing polls. Provisional
-readings refresh every 10 minutes, dimmed.
+The UI is one screen, the **Contraction Board**, built to explain the app as much as to
+show it. A one-sentence purpose under the title, the feed's health, the bar the data is
+as of, and a countdown to the next close. A four-step "How a window works" (contracting
+→ crossed → following → resolved) whose small drawings are the only schematic visuals on
+the page — everything else is data. Then two lanes, each showing its strongest eight
+with the rest a click away (at any moment a third of the universe may be shrinking):
+**Contracting** (`active`) cards with an "unwound since the peak" meter (`1 − hist/peak`,
+strength's own `decay`) and bars to the cross at the current pace; **Following the
+move** (`crossed`) cards with bar *n* of 24, distance to the target in band widths, and
+the best and worst excursions. A forming bar's provisional reading appears dimmed and
+labelled as such. A card opens a drawer: price with Bollinger Bands (the target band
+heavier) over the MACD histogram, the window shaded on both and the cross marked. Below,
+**Just resolved** — the outcome record as it is written, deliberately with no hit rates
+until M10 has a baseline. Light "paper and ink" by default, dark when the system asks;
+filterable by side, asset class, regime, and band. Rows update in place from the stream,
+and the stream's heartbeat carries health, so nothing polls.
 
 ## 9. Tuning surface
 

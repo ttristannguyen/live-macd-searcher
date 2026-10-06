@@ -74,6 +74,19 @@ def test_a_quiet_stream_sends_keep_alives():
     assert asyncio.run(go())[1:] == [": keep-alive\n\n"] * 2
 
 
+def test_with_health_every_heartbeat_reports_it():
+    # The board learns the feed went stale from the stream itself, never by polling.
+    async def go():
+        broadcaster = Broadcaster()
+        stream = event_stream(broadcaster, broadcaster.subscribe(), heartbeat=0.01,
+                              health=lambda: '{"status": "stale"}')  # fmt: skip
+        return await read(stream, 3)
+
+    connected, first, second = asyncio.run(go())
+    assert connected == ": connected\n\n"
+    assert first == second == 'event: health\ndata: {"status": "stale"}\n\n'
+
+
 def test_a_stalled_client_is_dropped_and_never_blocks_publishing():
     async def go():
         broadcaster = Broadcaster()
@@ -172,7 +185,7 @@ def test_a_client_hanging_up_mid_stream_leaves_the_detector_running(tmp_path):
         with httpx.stream("GET", f"http://127.0.0.1:{port}/api/stream", timeout=5) as response:
             events = []
             for line in response.iter_lines():
-                if line.startswith("event:"):
+                if line.startswith("event: window"):  # health events come too
                     events.append(line)
                 if len(events) == 3:
                     break  # hang up mid-stream

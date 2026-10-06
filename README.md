@@ -26,8 +26,17 @@ uv run pytest -q     # run the test suite
 uv run ruff check    # lint
 ```
 
-There is nothing to run yet. Running and deploying the app arrive with milestones M5
-and M9.
+Run it — detector and web page in one process, on http://127.0.0.1:8001:
+
+```bash
+npm --prefix ui ci && npm --prefix ui run build   # the page, once (and after UI changes)
+uv run live-macd-searcher                         # --db, --host, --port to override
+```
+
+A cold start warms the whole universe over REST (~7 minutes, paced) before the board
+fills. To work on the page with hot reload, run the app as above and, alongside it,
+`npm --prefix ui run dev` (http://localhost:5173, proxying `/api` to the app).
+Deployment is milestone M9.
 
 ## Docs
 

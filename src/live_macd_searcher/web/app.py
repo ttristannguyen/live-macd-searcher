@@ -14,7 +14,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -82,6 +82,14 @@ def create_app(
         return judge(app.state.status(), app.state.failure,
                      queries.newest_bar_time(conn), time.time())  # fmt: skip
 
+    def health_json() -> str:
+        """Health for the stream's heartbeat, on its own short-lived read-only connection."""
+        conn = sqlite3.connect(app.state.db_uri, uri=True)
+        try:
+            return health_now(conn).model_dump_json()
+        finally:
+            conn.close()
+
     @app.get("/api/windows", response_model=Board)
     def windows(
         conn: Annotated[sqlite3.Connection, Depends(read_only)],
@@ -93,10 +101,12 @@ def create_app(
         min_strength: Annotated[float, Query(ge=0, le=100)] = 0,
         min_bars: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+        order: Annotated[Literal["strength", "recent"], Query()] = "strength",
     ) -> Board:
         rows = queries.board(
             conn, states=state, asset_classes=asset_class, sides=side, regimes=regime,
             bands=band, min_strength=min_strength, min_bars=min_bars, limit=limit,
+            order=order,
         )  # fmt: skip
         return Board(
             status=health_now(conn).status,
@@ -135,7 +145,7 @@ def create_app(
     @app.get("/api/stream")
     async def stream() -> StreamingResponse:
         """SSE: `window.opened|updated|crossed|resolved` and `tick.provisional`."""
-        body = event_stream(broadcaster, broadcaster.subscribe())
+        body = event_stream(broadcaster, broadcaster.subscribe(), health=health_json)
         return StreamingResponse(
             body,
             media_type="text/event-stream",

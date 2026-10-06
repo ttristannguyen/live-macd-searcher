@@ -8,7 +8,7 @@ behind is dropped; its browser reconnects by itself and refetches the board.
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict
 
 from ..detect.config import SSE_CLIENT_BACKLOG, SSE_HEARTBEAT_SECONDS
@@ -58,17 +58,31 @@ class Broadcaster:
 
 
 async def event_stream(
-    broadcaster: Broadcaster, subscriber: Subscriber, heartbeat: float = SSE_HEARTBEAT_SECONDS
+    broadcaster: Broadcaster,
+    subscriber: Subscriber,
+    heartbeat: float = SSE_HEARTBEAT_SECONDS,
+    health: Callable[[], str] | None = None,
 ) -> AsyncIterator[str]:
-    """One client's SSE body. Ends when the client goes or is dropped as too slow."""
+    """One client's SSE body. Ends when the client goes or is dropped as too slow.
+
+    With `health` (a function returning the /api/health JSON), every heartbeat is a
+    `health` event rather than a bare comment: the board learns the feed went stale
+    without ever polling.
+    """
+
+    def beat() -> str:
+        # Keeps an idle connection open through the Tailscale proxy (DESIGN §13).
+        return f"event: health\ndata: {health()}\n\n" if health else ": keep-alive\n\n"
+
     try:
         yield ": connected\n\n"  # opens the stream at once, through any proxy buffering
+        if health:
+            yield beat()
         while not subscriber.dropped:
             try:
                 event, data = await asyncio.wait_for(subscriber.queue.get(), timeout=heartbeat)
             except TimeoutError:
-                # Keeps an idle connection open through the Tailscale proxy (DESIGN §13).
-                yield ": keep-alive\n\n"
+                yield beat()
                 continue
             yield f"event: {event}\ndata: {data}\n\n"
     finally:
