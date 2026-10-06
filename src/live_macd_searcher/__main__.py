@@ -18,6 +18,7 @@ from .ingest.pacer import RestPacer
 from .runtime import Runtime
 from .store.db import connect
 from .web.app import create_app
+from .web.stream import Broadcaster
 
 DEFAULT_DB = Path("state/live_macd_searcher.sqlite3")
 
@@ -25,7 +26,13 @@ DEFAULT_DB = Path("state/live_macd_searcher.sqlite3")
 def production_app(db_path: Path) -> FastAPI:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     client = httpx.AsyncClient()
-    runtime = Runtime(connect(db_path), HyperliquidFeed(client, RestPacer(REST_WEIGHT_PER_MIN)))
+    broadcaster = Broadcaster()
+    runtime = Runtime(
+        connect(db_path),
+        HyperliquidFeed(client, RestPacer(REST_WEIGHT_PER_MIN)),
+        on_window=broadcaster.window,
+        on_provisional=broadcaster.provisional,
+    )
 
     async def run() -> None:
         try:
@@ -33,7 +40,7 @@ def production_app(db_path: Path) -> FastAPI:
         finally:
             await client.aclose()
 
-    return create_app(db_path, runtime.status, run=run)
+    return create_app(db_path, runtime.status, run=run, broadcaster=broadcaster)
 
 
 def cli() -> None:

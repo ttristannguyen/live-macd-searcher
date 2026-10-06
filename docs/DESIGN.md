@@ -559,6 +559,17 @@ sends a comment every 30 seconds so idle connections survive the proxy (§13). O
 reconnect the UI refetches the board, because events sent while it was disconnected
 are gone.
 
+The stream is the one deliberately best-effort part of the app. Window events are
+published only *after* the bar and its windows are stored, carrying the row `id` and
+the same shape `/api/windows` returns, so a board can update rows in place and never
+shows anything the database doesn't hold. Each browser has its own bounded queue
+(`SSE_CLIENT_BACKLOG`); the detector publishes with a non-blocking put and never waits.
+A browser that falls that far behind is dropped — its stream ends, and EventSource
+reconnects and refetches. Measured: one to ten open boards cost the detector 3–7% of
+its throughput (within run-to-run noise at one), a hundred cost 16%, stalled ones
+almost nothing — against a need of ~166 bars an hour, cleared in ~0.05 s at any of
+those rates.
+
 The UI is one screen: a live board with two groups — **contracting** (`active`, sorted
 by strength) and **following** (`crossed`, showing bars since the cross, excursions,
 and distance to target). Filterable by asset class, side, regime, and band. Each row expands into a

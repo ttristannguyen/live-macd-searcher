@@ -16,10 +16,19 @@ from dataclasses import dataclass
 
 from .detect.config import BAR_RETENTION_DAYS, REFRESH_INTERVAL_MIN
 from .detect.symbol_state import Provisional, SymbolState
+from .detect.window import WindowEvent
 from .ingest.feed import FeedError, MarketFeed, Universe
 from .ingest.runner import Ingest
 from .market import Candle
-from .store.db import DAY_MS, forget_bars, live_symbols, load_bars, prune_bars, record_bar
+from .store.db import (
+    DAY_MS,
+    forget_bars,
+    live_symbols,
+    load_bars,
+    prune_bars,
+    record_bar,
+    window_id,
+)
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +58,14 @@ class Runtime:
         *,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        on_window: Callable[[WindowEvent, int], None] | None = None,
+        on_provisional: Callable[[list[Provisional]], None] | None = None,
     ) -> None:
+        """`on_window` hears every window event with its stored row id, and
+        `on_provisional` every refresh's readings — the live stream (M7)."""
         self.conn = conn
+        self.on_window = on_window
+        self.on_provisional = on_provisional
         self.feed = feed
         self.now_ms = now_ms
         self._sleep = sleep
@@ -97,12 +112,16 @@ class Runtime:
         """Recompute provisional readings from each held forming candle. Never persisted,
         never moves a window (invariant 1)."""
         assert self.ingest is not None
+        readings = []
         for symbol, forming in self.ingest.closer.forming.items():
             state = self.states.get(symbol)
             reading = state.peek(forming) if state is not None else None
             if reading is not None:
                 self.provisional[symbol] = reading
+                readings.append(reading)
         self.last_refresh_at = time.time()
+        if self.on_provisional is not None:
+            self.on_provisional(readings)
 
     async def daily(self) -> None:
         """Prune old bars, and follow the universe as it changes."""
@@ -164,6 +183,9 @@ class Runtime:
         # Not best-effort: a failed write raises and stops the app (CLAUDE.md guardrails).
         record_bar(self.conn, symbol, candle, [event.window for event in events])
         for event in events:
+            # Only after the write: the stream never shows what the database doesn't hold.
+            if self.on_window is not None:
+                self.on_window(event, window_id(self.conn, symbol, event.window.started_at))
             window = event.window
             log.info("window %s: %s %s %s strength=%.0f", event.kind, symbol, window.side,
                      window.state, window.strength)  # fmt: skip

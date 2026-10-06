@@ -87,6 +87,14 @@ def upsert_window(conn: sqlite3.Connection, window: Window) -> None:
         conn.execute(_UPSERT_WINDOW, astuple(window))
 
 
+def window_id(conn: sqlite3.Connection, symbol: str, started_at: int) -> int:
+    """The stored row id of a window, by its identity — what the stream sends the UI."""
+    row = conn.execute(
+        "SELECT id FROM windows WHERE symbol = ? AND started_at = ?", (symbol, started_at)
+    ).fetchone()
+    return row[0]
+
+
 def load_bars(conn: sqlite3.Connection, symbol: str) -> list[Candle]:
     """Every stored bar for a symbol, oldest first: what a restart replays."""
     rows = conn.execute(

@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M7 — Stream
+**Now:** M8 — UI
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -182,17 +182,24 @@ symbols), served `xyz:GOLD` series, and answered a bad `side` with 422 — bound
 
 ---
 
-## M7 — Stream
+## M7 — Stream ✅ (2026-10-06)
 
 Blocked by: M6
 
-- [ ] `GET /api/stream` — SSE
-- [ ] Events: `window.opened`, `window.updated`, `window.crossed`, `window.resolved`, `tick.provisional`
-- [ ] A dropped or slow client is disconnected, never allowed to block the detector — with a comment at the `except` recording that intent
-- [ ] SSE comment heartbeat every 30 s, so idle connections survive the Tailscale proxy (DESIGN §13)
-- [ ] Test: killing a subscriber mid-stream leaves the detector running
+- [x] `GET /api/stream` — SSE (`web/stream.py`); opens with a `: connected` comment so the stream starts at once through any proxy
+- [x] Events: `window.opened`, `window.updated`, `window.crossed`, `window.resolved` (each carrying the row `id`, in `/api/windows`' shape), `tick.provisional` (one batch per refresh). Published only after the bar and its windows are stored
+- [x] A dropped or slow client is disconnected, never allowed to block the detector — non-blocking put into a bounded per-client queue (`SSE_CLIENT_BACKLOG`); the intent is recorded at the `except QueueFull`
+- [x] SSE comment heartbeat every `SSE_HEARTBEAT_SECONDS` (30), so idle connections survive the Tailscale proxy (DESIGN §13)
+- [x] Test: killing a subscriber mid-stream leaves the detector running — a real uvicorn server, a stand-in detector publishing every 5 ms, a client that hangs up after three events
+- [x] Stream tests bound every wait: a regression fails in seconds rather than hanging the suite (one did, during mutation testing, before this)
 
-**Done when:** the detector's throughput is measurably unaffected by client count.
+**Done when:** the detector's throughput is measurably unaffected by client count. — met:
+benchmarked over the real closed-bar path (state, atomic write, row-id lookup, publish),
+2 symbols x 1,400 bars, median of 3 — 0 clients 3,981 bars/s; 1 keeping up 97%; 10, 93%;
+100, 84%; 10 or 100 stalled, 94–96% (dropped once their backlog fills). Real load is ~166
+bars an hour. 209 passed; four planted bugs (a backed-up client kept, a closed stream
+left subscribed, no keep-alive, windows announced before they are stored) each turned a
+test red.
 
 ---
 

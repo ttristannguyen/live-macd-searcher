@@ -107,6 +107,14 @@ CLOCK_SKEW_MARGIN_SECONDS = 60
 FEED_STALE_SECONDS = 120
 BAR_STALE_HOURS = 2
 
+# The live stream (DESIGN §8, §13). A comment every 30 s keeps an idle connection open
+# through the Tailscale proxy: between refreshes the stream can be quiet for 10 minutes.
+SSE_HEARTBEAT_SECONDS = 30
+# Events a browser may fall behind before it is dropped rather than waited on. An hourly
+# rollover is a few hundred events at most, so this is hours of backlog — a client this
+# far behind is stuck, and its browser reconnects and refetches the board on its own.
+SSE_CLIENT_BACKLOG = 1000
+
 # Reconnect backoff doubles from 1 s up to this, so an exchange outage is retried about
 # once a minute rather than hammered.
 RECONNECT_MAX_BACKOFF_SECONDS = 60

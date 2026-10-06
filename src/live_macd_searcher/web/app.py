@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from ..detect.config import BAR_RETENTION_DAYS
 from ..detect.vocabulary import AssetClass, Band, Regime, Side, State
@@ -26,6 +27,7 @@ from . import queries
 from .health import judge
 from .models import Board, Health, Series, WindowDetail, WindowOut
 from .series import indicator_series
+from .stream import Broadcaster, event_stream
 
 log = logging.getLogger(__name__)
 
@@ -44,10 +46,12 @@ def create_app(
     status: Callable[[], RuntimeStatus],
     *,
     run: Callable[[], Awaitable[None]] | None = None,
+    broadcaster: Broadcaster | None = None,
     on_failure: Callable[[BaseException], None] = _stop_process,
 ) -> FastAPI:
-    """`run` is the detector, started with the app and stopped with it. Tests leave it out
-    and serve a prepared database."""
+    """`run` is the detector, started with the app and stopped with it; `broadcaster` is
+    what it publishes to. Tests leave `run` out and serve a prepared database."""
+    broadcaster = broadcaster or Broadcaster()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -72,6 +76,7 @@ def create_app(
     app.state.db_uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
     app.state.status = status
     app.state.failure = None
+    app.state.broadcaster = broadcaster
 
     def health_now(conn: sqlite3.Connection) -> Health:
         return judge(app.state.status(), app.state.failure,
@@ -126,6 +131,16 @@ def create_app(
         if not stored:
             raise HTTPException(404, f"no bars stored for {symbol}")
         return Series(symbol=symbol, bars=indicator_series(stored)[-bars:])
+
+    @app.get("/api/stream")
+    async def stream() -> StreamingResponse:
+        """SSE: `window.opened|updated|crossed|resolved` and `tick.provisional`."""
+        body = event_stream(broadcaster, broadcaster.subscribe())
+        return StreamingResponse(
+            body,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/health", response_model=Health)
     def health(conn: Annotated[sqlite3.Connection, Depends(read_only)]) -> Health:
