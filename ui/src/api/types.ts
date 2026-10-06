@@ -78,6 +78,7 @@ export interface Health {
   warming: number
   rest_429s: number
   rest_weight_spent: number
+  bars_corrected: number
 }
 
 /** A reading from the still-forming bar: displayed, never persisted, never acted on. */

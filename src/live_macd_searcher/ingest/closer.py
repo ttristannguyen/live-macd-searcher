@@ -57,3 +57,16 @@ def _flat_hours(previous: Candle, *, until: int) -> list[Candle]:
         Candle(open_time, price, price, price, price, 0.0)
         for open_time in range(previous.open_time + HOUR_MS, until, HOUR_MS)
     ]
+
+
+def confirm(released: list[Candle], rest: list[Candle]) -> list[Candle]:
+    """Websocket-closed bars, replaced by REST's record of the same hours (PLAN D14).
+
+    The websocket's last snapshot of an hour can miss the hour's final trade — seen on
+    2026-10-06, ZEC off by a tick. REST holds the finished candle, so where it has one,
+    it wins. Where it has none, the released bar stands: a flat fill for an hour with no
+    trades is exactly what REST's silence means, and a websocket bar REST lacks is kept
+    rather than dropped (the caller logs it).
+    """
+    by_time = {candle.open_time: candle for candle in rest}
+    return [by_time.get(bar.open_time, bar) for bar in released]

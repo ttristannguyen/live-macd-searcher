@@ -48,6 +48,7 @@ class RuntimeStatus:
     warm: int
     rest_429s: int
     rest_weight_spent: int
+    bars_corrected: int = 0  # websocket bars REST corrected (PLAN D14)
 
 
 class Runtime:
@@ -86,6 +87,7 @@ class Runtime:
             warm=sum(not state.warming for state in self.states.values()),
             rest_429s=self.feed.rate_limited,
             rest_weight_spent=self.feed.weight_spent,
+            bars_corrected=ingest.bars_corrected if ingest is not None else 0,
         )
 
     async def run(self) -> None:

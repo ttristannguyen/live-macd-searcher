@@ -90,3 +90,4 @@ class Health(BaseModel):
     warming: int
     rest_429s: int
     rest_weight_spent: int
+    bars_corrected: int  # websocket bars REST corrected before the detector saw them

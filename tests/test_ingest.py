@@ -12,8 +12,8 @@ import pytest
 
 from live_macd_searcher.detect.config import BACKFILL_BARS, CLOCK_SKEW_MARGIN_SECONDS
 from live_macd_searcher.detect.symbol_state import SymbolState
-from live_macd_searcher.ingest.closer import CandleCloser
-from live_macd_searcher.ingest.feed import HOUR_MS, FeedDisconnected
+from live_macd_searcher.ingest.closer import CandleCloser, confirm
+from live_macd_searcher.ingest.feed import HOUR_MS, FeedDisconnected, FeedError
 from live_macd_searcher.ingest.runner import Ingest, _hour_closed_since
 from live_macd_searcher.market import Candle
 from tests.fakes import (
@@ -48,6 +48,13 @@ class Recorder:
     def on_closed(self, symbol: str, candle: Candle) -> None:
         self.closed[symbol].append(candle)
         self.events[symbol] += self.states[symbol].on_bar(candle)
+
+
+def gap_fills(feed: FakeFeed) -> list[tuple[str, int, int]]:
+    """REST requests made to gap-fill, as opposed to confirming closed bars (PLAN D14):
+    a gap-fill asks up to *now* — mid-hour in the fake — and a confirmation only up to a
+    closed hour's open."""
+    return [request for request in feed.requests if request[2] % HOUR_MS != 0]
 
 
 def drive(sessions: list[Session], **ingest_options) -> tuple[Recorder, FakeFeed]:
@@ -182,7 +189,7 @@ def test_a_drop_mid_hour_gives_the_same_bars_and_windows_as_no_drop():
     # Not vacuous: windows were produced, and resolved, after warm-up.
     assert any(e.kind == "resolved" for events in uninterrupted.events.values() for e in events)
     # The reconnect gap-filled from the hour that was forming when it dropped.
-    assert {start for symbol, start, _ in feed.requests[len(SYMBOLS):]} == {520 * HOUR_MS}
+    assert {start for _, start, _ in gap_fills(feed)[len(SYMBOLS):]} == {520 * HOUR_MS}
 
 
 # --- reconnecting ------------------------------------------------------------------
@@ -250,7 +257,7 @@ def test_a_reconnect_within_the_same_hour_fetches_nothing_and_misses_nothing():
         Session(now_hour=455, messages=stream_hours(HISTORY, 455, 460)),
     ])  # fmt: skip
 
-    assert feed.requests[len(SYMBOLS):] == []  # only the cold start fetched
+    assert gap_fills(feed)[len(SYMBOLS):] == []  # only the cold start gap-filled
     assert interrupted.closed == uninterrupted.closed
 
 
@@ -267,3 +274,63 @@ def test_near_the_hour_boundary_it_fetches_anyway(seconds_into_hour, fetch):
 
 def test_a_closed_hour_since_the_start_always_fetches():
     assert _hour_closed_since(449 * HOUR_MS, 450 * HOUR_MS + 1_800_000)
+
+
+# --- REST confirmation of websocket-closed bars (PLAN D14) ------------------------------
+
+
+def test_confirm_prefers_rest_and_keeps_what_rest_lacks():
+    real, fill = HISTORY["BTC"][10], Candle(11 * HOUR_MS, 5.0, 5.0, 5.0, 5.0, 0.0)
+    short = real._replace(close=real.close - 0.1, volume=real.volume - 0.02)
+    assert confirm([short, fill], [real]) == [real, fill]  # corrected; fill stands
+    assert confirm([short], []) == [short]  # REST silent: the websocket bar stands
+
+
+def test_a_websocket_bar_missing_its_last_trade_is_corrected_by_rest():
+    # BTC's last snapshot of hour 455 misses the final trade: close off, volume short.
+    final = HISTORY["BTC"][455]
+    short = final._replace(close=round(final.close - 0.1, 2), volume=final.volume - 0.02)
+    streamed = stream_hours(HISTORY, 450, 460)
+    messages = [(s, short if (s, c) == ("BTC", final) else c) for s, c in streamed]
+    feed = FakeFeed(HISTORY, [Session(now_hour=450, messages=messages)])
+    recorder = Recorder()
+    ingest = Ingest(feed, SYMBOLS, recorder.on_closed, now_ms=feed.now_ms)
+    with pytest.raises(FeedDisconnected):
+        asyncio.run(ingest.run_session())
+
+    assert recorder.closed["BTC"][-10:] == HISTORY["BTC"][450:460]  # REST's record, not ours
+    assert ingest.bars_corrected == 1
+
+
+class FailsFirstConfirmation(FakeFeed):
+    """The first confirmation request fails, as a REST outage would."""
+
+    failed = False
+
+    async def candles(self, symbol, start_ms, end_ms):
+        if end_ms % HOUR_MS == 0 and not self.failed:  # a confirmation, not a gap-fill
+            self.failed = True
+            raise FeedError("REST down")
+        return await super().candles(symbol, start_ms, end_ms)
+
+
+def test_a_failed_confirmation_loses_no_bar():
+    uninterrupted, _ = drive([Session(now_hour=450, messages=stream_hours(HISTORY, 450, 460))])
+
+    # Hour 450 is released by the websocket, then its confirmation fails: released, never
+    # delivered. The next session must re-supply it, not resume after it.
+    feed = FailsFirstConfirmation(HISTORY, [
+        Session(now_hour=450, messages=stream_hours(HISTORY, 450, 451)),
+        Session(now_hour=452, messages=stream_hours(HISTORY, 452, 460)),
+    ])  # fmt: skip
+    recorder = Recorder()
+    ingest = Ingest(feed, SYMBOLS, recorder.on_closed, now_ms=feed.now_ms)
+
+    async def two_sessions():
+        for _ in range(2):
+            with pytest.raises(FeedError):
+                await ingest.run_session()
+
+    asyncio.run(two_sessions())
+    assert feed.failed
+    assert recorder.closed == uninterrupted.closed

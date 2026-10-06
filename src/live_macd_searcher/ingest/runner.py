@@ -10,6 +10,12 @@ One session is one connection's lifetime:
 Overlap between steps 2 and 3 is harmless: the closer ignores hours already closed and
 keeps the most complete snapshot of the current one, and the detector ignores any bar
 it has already seen.
+
+Every bar the *websocket* closes is confirmed by REST before it is delivered (PLAN D14):
+its last snapshot of an hour can miss the hour's final trade. Bars the gap-fill closes
+are REST's own already. The loop is sequential, so delivery order per symbol is the
+order of the hours, whatever REST's pacing costs; the pump keeps reading the stream
+meanwhile, so the connection never stalls.
 """
 
 import asyncio
@@ -23,7 +29,7 @@ from ..detect.config import (
     RECONNECT_MAX_BACKOFF_SECONDS,
 )
 from ..market import Candle
-from .closer import CandleCloser
+from .closer import CandleCloser, confirm
 from .feed import HOUR_MS, CandleMessage, FeedDisconnected, FeedError, MarketFeed
 
 log = logging.getLogger(__name__)
@@ -56,6 +62,8 @@ class Ingest:
         self.streaming = False  # gap-fill done and the live stream flowing
         self.last_session_streamed = False  # a session that got that far resets the backoff
         self._buffer: asyncio.Queue | None = None  # the current session's, while one runs
+        self.last_delivered: dict[str, Candle] = {}  # the last bar `on_closed` received
+        self.bars_corrected = 0  # websocket bars REST corrected (PLAN D14), for health
         self.has_streamed = False  # any session has finished its gap-fill: past starting up
         self.last_message_at: float | None = None  # wall clock, for health only
 
@@ -101,7 +109,10 @@ class Ingest:
                     if isinstance(item, BaseException):
                         raise item
                     self.last_message_at = time.time()
-                    self._offer(*item)
+                    symbol, candle = item
+                    released = self.closer.offer(symbol, candle)
+                    if released:
+                        self._deliver(symbol, await self._confirm(symbol, released))
             finally:
                 self.streaming = False
                 self._buffer = None
@@ -112,36 +123,57 @@ class Ingest:
         end = self.now_ms()
         started, closed, fetched = time.monotonic(), 0, 0
         for symbol in self.symbols:
-            start = self._gap_start(symbol, end)
+            start = self._resume(symbol, end)
             if not _hour_closed_since(start, end):
                 continue  # nothing missed: the stream resends the forming hour in full
             fetched += 1
             for candle in await self.feed.candles(symbol, start, end):
-                closed += self._offer(symbol, candle)
+                bars = self.closer.offer(symbol, candle)
+                self._deliver(symbol, bars)  # closed by REST candles: REST's own already
+                closed += len(bars)
         log.info("gap-filled %d closed bars from %d of %d symbols in %.0fs",
                  closed, fetched, len(self.symbols), time.monotonic() - started)  # fmt: skip
 
-    def _gap_start(self, symbol: str, end: int) -> int:
-        held = self.closer.forming.get(symbol)
-        if held is not None:
-            return held.open_time  # the hour that was forming when the connection dropped
-        last = self.closer.last_closed.get(symbol) or self.last_stored(symbol)
+    def _resume(self, symbol: str, end: int) -> int:
+        """Where a symbol's gap-fill starts: just after the last bar *delivered*.
+
+        Never after one the closer merely released: a confirmation that failed leaves
+        bars released but undelivered, and resuming from the closer would lose them. So
+        if the closer is ahead of what was delivered (or knows nothing, after a
+        restart), it is rewound to the last delivered bar — which also lets hours with no
+        trades right after that bar be filled at its close rather than skipped.
+        """
+        last = self.last_delivered.get(symbol) or self.last_stored(symbol)
         if last is not None:
-            # Seed the closer, so hours with no trades right after this bar are filled at
-            # its close rather than skipped.
-            self.closer.last_closed[symbol] = last
+            if self.closer.last_closed.get(symbol) != last:
+                self.closer.last_closed[symbol] = last
+                self.closer.forming.pop(symbol, None)  # the gap-fill re-supplies it
             return last.open_time + HOUR_MS
         # Cold start: exactly a full warm-up. Hyperliquid returns every candle that
         # overlaps the range, so starting on an hour boundary BACKFILL_BARS hours back
         # gives BACKFILL_BARS closed candles plus the forming one.
         return (end // HOUR_MS - BACKFILL_BARS) * HOUR_MS
 
-    def _offer(self, symbol: str, candle: Candle) -> int:
-        """Offer one snapshot to the closer; pass on what it closes. Returns how many."""
-        closed = self.closer.offer(symbol, candle)
-        for bar in closed:
+    async def _confirm(self, symbol: str, released: list[Candle]) -> list[Candle]:
+        """REST's record of the hours the websocket just closed (PLAN D14). Paced like every
+        REST call; a failure ends the session, and the next gap-fill fetches them again."""
+        rest = await self.feed.candles(symbol, released[0].open_time, released[-1].open_time)
+        confirmed = confirm(released, rest)
+        rest_hours = {candle.open_time for candle in rest}
+        for streamed, final in zip(released, confirmed, strict=True):
+            if final != streamed:
+                self.bars_corrected += 1
+                log.info("%s %d: REST corrected the websocket bar (%s -> %s)",
+                         symbol, streamed.open_time, streamed, final)  # fmt: skip
+            elif streamed.volume > 0 and streamed.open_time not in rest_hours:
+                log.warning("%s %d: REST has no candle for a traded hour; keeping the "
+                            "websocket bar", symbol, streamed.open_time)  # fmt: skip
+        return confirmed
+
+    def _deliver(self, symbol: str, bars: list[Candle]) -> None:
+        for bar in bars:
             self.on_closed(symbol, bar)
-        return len(closed)
+            self.last_delivered[symbol] = bar
 
 
 def _hour_closed_since(start: int, now: int) -> bool:

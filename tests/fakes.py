@@ -84,8 +84,11 @@ class FakeFeed:
         yield self._replay(session.messages)
 
     async def _replay(self, messages: list[CandleMessage]) -> AsyncIterator[CandleMessage]:
-        for message in messages:
-            yield message
+        for symbol, candle in messages:
+            # REST keeps pace with the stream: the newest hour streamed is the one forming,
+            # so a confirmation of a just-closed hour finds it final, as on Hyperliquid.
+            self.now_hour = max(self.now_hour, candle.open_time // HOUR_MS)
+            yield symbol, candle
         raise FeedDisconnected("scripted end of session")
 
 

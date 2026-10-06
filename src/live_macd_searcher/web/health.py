@@ -53,6 +53,7 @@ def judge(
         warming=status.symbols - status.warm,
         rest_429s=status.rest_429s,
         rest_weight_spent=status.rest_weight_spent,
+        bars_corrected=status.bars_corrected,
     )
 
 

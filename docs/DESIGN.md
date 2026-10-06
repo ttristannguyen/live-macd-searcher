@@ -306,8 +306,8 @@ refresh (every 10 min) ──▶ SymbolState.peek(held forming candle)
 ### Sizing, and what that buys us
 
 About 140 symbols pass the liquidity floors (the same floors `macd_searcher` uses, and
-it keeps about 140). That's about 140 closed bars an hour, all landing within seconds
-of the hour. Each detector step is microseconds. One websocket connection carries every
+it keeps about 140). That's about 140 closed bars an hour, all closing within seconds
+of the hour and confirmed by REST over the next few minutes. Each detector step is microseconds. One websocket connection carries every
 subscription, far inside Hyperliquid's 1,000-subscription limit. There is no queue, no
 worker pool, no message bus, no cache tier: one process, one asyncio event loop, a
 timer, and a `dict[str, SymbolState]` holding a ~400-bar ring buffer each — a few
@@ -327,6 +327,14 @@ universe refresh, warm-up, and gap-fill after a reconnect (§6) — and is paced
 `REST_WEIGHT_PER_MIN`, half the limit, so even a cold start leaves `macd_searcher`
 room. The price is a reconnect path, which §6 specifies.
 
+Since PLAN D14, REST also confirms every bar the websocket closes: one request per
+symbol per hour, ~3,900 weight, paced in our half — about 6½ minutes of REST after each
+close, including the top of every fourth hour when `macd_searcher` scans. The pacer
+still leaves it half the limit; the M9 check on its retries says whether the overlap
+matters, and if it does, confirmations on those hours can start a few minutes late. The
+websocket still earns its place: it says *when* each hour has closed, and it supplies
+the forming bar for every refresh without polling.
+
 ### The one abstraction
 
 `ingest.MarketFeed` is a `Protocol` with a single implementation (Hyperliquid). The seam
@@ -342,7 +350,8 @@ This is the part that actually breaks live scanners, so it gets its own section.
   forming bar. Every 10 minutes a **refresh** computes the forming bar and pushes it as
   `provisional: true` for the UI to show dimmed, but it is never persisted and never
   moves the state machine. This is what stops the board repainting — and it means a
-  window can only change state once an hour, seconds after the close.
+  window can only change state once an hour, within minutes of the close, once that
+  hour's bars are confirmed.
 - **Closedness comes from the exchange, not our clock.** Each websocket message is the
   full current candle for one symbol. The app holds the latest one; when a message
   arrives with a later `open_time`, the held candle is closed and goes to the detector.
@@ -352,6 +361,16 @@ This is the part that actually breaks live scanners, so it gets its own section.
   snapshots of one hour meet — a REST gap-fill and a buffered websocket message — the
   one with more volume wins, because volume only grows within an hour; that makes their
   arrival order irrelevant.
+- **Closed bars are confirmed by REST (PLAN D14).** The websocket's last snapshot of an
+  hour can miss the hour's final trade — the first audit found one in ~1,100 (ZEC, a
+  tick off). So every bar the websocket closes is fetched from REST before the detector
+  sees it, and REST's candle wins; a flat fill stands where REST has no candle (or an
+  empty one). Gap-fill bars come from REST already. The ingest loop stays sequential, so
+  each symbol's bars arrive in order however long the paced requests take, and the
+  stream keeps being read into the buffer meanwhile. Resumption keys off the last bar
+  *delivered*, not the last the closer released: a confirmation that fails ends the
+  session, and the next gap-fill fetches that hour again. Corrections are logged and
+  counted in `/api/health` (`bars_corrected`).
 - **Hours with no trades are flat bars, not gaps.** Hyperliquid sends no candle at all
   for an hour with no trades (seen on thin `xyz` markets). The closer releases each such
   hour as a bar at the previous close — open, high, low, and close all equal — with zero
@@ -655,11 +674,11 @@ survives, and so nobody adds them by reflex:
 - **REST polling for live bars.** Simpler code than a websocket, but it spends the
   per-IP budget `macd_searcher` depends on and collides with its scan every four hours
   (§5). Revisit only if this app ever runs from its own IP.
-- **A standing audit of websocket bars against REST.** The closed-bar rule (§6) trusts
-  that the last message before rollover is the final candle. That gets checked once,
-  during the M9 soak, by comparing a day of stored bars with `candleSnapshot`. If they
-  ever disagree, closed bars get confirmed by REST from then on; until then, a permanent
-  audit job is cost without a finding.
+- **Trusting websocket-closed bars without confirmation.** Dropped 2026-10-06 (PLAN
+  D14): the first audit found a websocket-closed bar missing its hour's last trade, and
+  this section had pre-agreed that any disagreement moves closed bars to REST
+  confirmation. Revisit only if REST budget, rather than accuracy, becomes the
+  constraint — `bars_corrected` in health shows what confirmation is buying.
 - **A market-hours guard for `xyz`.** Designed and then dropped on 2026-10-05: it left
   every hour outside a market's external-pricing hours (per trade[XYZ]'s published
   schedule and holiday calendar) out of the series, the way a futures chart skips a
