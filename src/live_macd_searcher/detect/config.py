@@ -106,6 +106,9 @@ CLOCK_SKEW_MARGIN_SECONDS = 60
 # two allows for a slow close without hiding a stopped one.
 FEED_STALE_SECONDS = 120
 BAR_STALE_HOURS = 2
+# The staleness alarm judges health this often and logs each change of status. A
+# minute is well inside FEED_STALE_SECONDS, so a stale feed is logged within ~3 minutes.
+HEALTH_CHECK_SECONDS = 60
 
 # The live stream (DESIGN §8, §13). A comment every 30 s keeps an idle connection open
 # through the Tailscale proxy: between refreshes the stream can be quiet for 10 minutes.

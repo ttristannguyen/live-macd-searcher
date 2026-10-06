@@ -1,0 +1,33 @@
+# systemd unit for live-macd-searcher: the detector and its web page, in one process.
+# Modelled on macd_searcher's deploy/macd-searcher-web.service, and beside it on the
+# same droplet (DESIGN §13). Assumes the repo is at /home/tristan/live-macd-searcher,
+# `uv sync` has been run (so .venv/bin/live-macd-searcher exists), and ui/dist is built.
+#
+# Install:
+#   sudo cp deploy/live-macd-searcher.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now live-macd-searcher
+#   systemctl status live-macd-searcher
+#   journalctl -u live-macd-searcher -f      # follow logs
+
+[Unit]
+Description=live-macd-searcher detector and board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tristan
+WorkingDirectory=/home/tristan/live-macd-searcher
+# The venv console script is self-contained (shebang -> venv python), so no PATH/uv needed.
+# Bound to localhost only — reached over `tailscale serve` on :8443, never public.
+# The database lives at state/live_macd_searcher.sqlite3 under WorkingDirectory.
+ExecStart=/home/tristan/live-macd-searcher/.venv/bin/live-macd-searcher --host 127.0.0.1 --port 8001
+# If the detector stops, the app exits non-zero on purpose (a page over a dead detector
+# would show frozen windows as live); this brings it straight back. Every write is
+# atomic, and a restart rebuilds state exactly from stored bars (DESIGN §6).
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -234,21 +234,21 @@ to the URL "60" (its minutes argument, misread as the URL).
 
 Blocked by: M8. Follow DESIGN §13; every choice below copies `macd_searcher` on purpose.
 
-- [ ] `live-macd-searcher` console script in `pyproject.toml` — one command runs detector + web, takes `--host` / `--port`
-- [ ] `deploy/live-macd-searcher.service` — modelled on `macd_searcher/deploy/macd-searcher-web.service`: `User=tristan`, `WorkingDirectory=/home/tristan/live-macd-searcher`, `--host 127.0.0.1 --port 8001`, `Restart=on-failure`, install steps in the header comment
+- [x] `live-macd-searcher` console script in `pyproject.toml` — one command runs detector + web, takes `--host` / `--port` (M6)
+- [x] `deploy/live-macd-searcher.service` — modelled on `macd_searcher/deploy/macd-searcher-web.service`: `User=tristan`, `WorkingDirectory=/home/tristan/live-macd-searcher`, `--host 127.0.0.1 --port 8001`, `Restart=on-failure`, install steps in the header comment
 - [x] On the droplet: confirm port 8001 is free (`ss -ltnp`) and note what `tailscale serve status` shows *before* changing anything — 2026-10-04: 8001 free; serve has only 443 `/` → `127.0.0.1:8000`
 - [ ] Check `free -h` and swap before the first `ui` build (1 GB droplet)
 - [ ] Clone to `~/live-macd-searcher`, `uv sync`, build `ui/dist`, enable the unit
 - [ ] `sudo tailscale serve --bg --https=8443 http://127.0.0.1:8001`; `tailscale serve status` shows the new handler and the existing one unchanged
-- [ ] README deployment section mirroring `macd_searcher`'s: install, update one-liner, restart, `journalctl -u live-macd-searcher -f`
-- [ ] Feed-staleness alarm (log-level is fine to start)
-- [ ] Backup: `scripts/sync_prod_db.ps1` adapted from `macd_searcher` — SQLite online backup on the droplet, pulled to the desktop
+- [x] README deployment section mirroring `macd_searcher`'s: install, update one-liner, restart, `journalctl -u live-macd-searcher -f`
+- [x] Feed-staleness alarm (log-level is fine to start) — `HealthAlarm`: health judged every `HEALTH_CHECK_SECONDS`, each change logged, stale/failed as WARNING
+- [x] Backup: `scripts/sync_prod_db.ps1` adapted from `macd_searcher` — SQLite online backup on the droplet, pulled to the desktop (written; first real run on the droplet)
 - [ ] Check: the board loads at `https://<droplet>.<tailnet>.ts.net:8443/` and a window appears without a refresh
 - [ ] Check: nothing answers on the droplet's public IP at 8001
 - [ ] Check: `macd_searcher`'s page and cron still work, unaffected
 - [ ] Check: `macd_searcher`'s `logs/scan.log` shows no more `attempt N failed` retry warnings in the week after deploy than the week before
-- [ ] Check (one-off): a day of stored websocket bars matches `candleSnapshot` for every symbol (DESIGN §11 — if not, closed bars move to REST confirmation)
-- [ ] 7-day soak: no memory growth, no missed bars, no unexplained `warming` symbols, zero REST 429s
+- [ ] Check (one-off): a day of stored websocket bars matches `candleSnapshot` for every symbol (DESIGN §11 — if not, closed bars move to REST confirmation). `scripts/audit_bars.py`. **First run, desktop, 2026-10-06 — 6 h x 185 symbols: 1,109 agree, 1 differs** (ZEC 13:00, websocket-closed: close 1342.6 vs 1342.7, volume short by 0.02 — the hour's last trade missed). See D14
+- [ ] 7-day soak: no memory growth, no missed bars, no unexplained `warming` symbols, zero REST 429s. Baseline on the desktop: ~57 MB resident with 185 symbols
 
 **Done when:** it has survived a week unattended on the droplet, including at least one
 restart of the service, is reachable over the tailnet and nowhere else, and
@@ -286,6 +286,7 @@ Open questions from DESIGN §12. Tick when settled, and record the answer inline
 - [ ] **D7 — Is `POST_CROSS_BARS = 24` the right horizon?** Awaiting M10. → _answer:_
 - [x] **D12 — Is `MIN_PEAK_PCT = 0.15` gating out evidence?** → _answer (2026-10-05):_ lowered to **0.05**. On 5,000 real 1h bars of six symbols with the gate off (~2,850 resolved windows), 0.15 dropped about half of all windows, yet hit and cross rates were flat across peak size (<0.05%: 30% hit; 0.15–0.25%: 26%; ≥0.5%: 32%). A gated window is never stored, so a high gate could never be corrected by the outcome data; 0.05 drops only the smallest ~15%. Revisit in M10 with the stored outcomes.
 - [x] **D13 — Hours with no trades.** → _answer (2026-10-05):_ keep the previous hour's price — a flat bar at the previous close (open = high = low = close), zero volume. Not a copy of the previous candle, whose high and low would invent a range the target check and excursions would read. Done in `CandleCloser`, which also fills a gap after the last stored bar on restart (DESIGN §6).
+- [ ] **D14 — Confirm closed bars by REST?** The first bar audit (2026-10-06) found 1 websocket-closed bar in ~1,100 missing its hour's last trade (ZEC: close off by one tick, volume by 0.02). DESIGN §11 pre-agreed that any disagreement moves closed bars to REST confirmation. Cost: one `candleSnapshot` per symbol per hour (~3,900 weight), inside our half of the per-IP budget, but each hour's bars reach the detector up to ~6½ minutes after the close instead of seconds. Alternative: keep websocket bars and re-audit weekly, switching if the rate grows. → _answer:_
 - [x] **D8 — Timeframe and cadence.** → _answer (2026-10-04):_ 1-hour bars, provisional refresh every 10 minutes. Only closed hourly bars move windows. Replaces the original 5-minute design. (First written as REST polling; moved to a websocket by D1.)
 - [x] **D9 — What happens after a cross?** → _answer (2026-10-04):_ follow the window until it reaches the target band (`hit`), the histogram flips back (`reversed`), or `POST_CROSS_BARS` pass (`expired`).
 - [x] **D10 — Bollinger Bands' role.** → _answer (2026-10-04):_ a first-class `band` field (`far` / `near` / `through` the middle band), filterable, and a score multiplier like regime. Not a gate.

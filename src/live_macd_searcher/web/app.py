@@ -19,12 +19,12 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from ..detect.config import BAR_RETENTION_DAYS
+from ..detect.config import BAR_RETENTION_DAYS, HEALTH_CHECK_SECONDS
 from ..detect.vocabulary import AssetClass, Band, Regime, Side, State
 from ..runtime import RuntimeStatus
 from ..store.db import connect
 from . import queries
-from .health import judge
+from .health import HealthAlarm, judge
 from .models import Board, Health, Series, WindowDetail, WindowOut
 from .series import indicator_series
 from .stream import Broadcaster, event_stream
@@ -56,13 +56,21 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         connect(db_path).close()  # the schema exists before the first read-only request
-        task = asyncio.create_task(run()) if run is not None else None
-        if task is not None:
-            task.add_done_callback(watch)
+        tasks = []
+        if run is not None:
+            detector = asyncio.create_task(run())
+            detector.add_done_callback(watch)
+            tasks = [detector, asyncio.create_task(alarm())]
         yield
-        if task is not None:
+        for task in tasks:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def alarm() -> None:
+        health_alarm = HealthAlarm()
+        while True:
+            await asyncio.sleep(HEALTH_CHECK_SECONDS)
+            health_alarm.check(Health.model_validate_json(health_json()))
 
     def watch(task: asyncio.Task) -> None:
         if task.cancelled():

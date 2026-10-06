@@ -4,10 +4,14 @@ Honest by construction: anything short of a live, recent feed is reported as suc
 the reasons in plain words, and the board carries the same status (PLAN M6).
 """
 
+import logging
+
 from ..detect.config import BAR_STALE_HOURS, FEED_STALE_SECONDS
 from ..ingest.feed import HOUR_MS
 from ..runtime import RuntimeStatus
-from .models import Health
+from .models import Health, HealthStatus
+
+log = logging.getLogger(__name__)
 
 
 def judge(
@@ -50,3 +54,21 @@ def judge(
         rest_429s=status.rest_429s,
         rest_weight_spent=status.rest_weight_spent,
     )
+
+
+class HealthAlarm:
+    """The feed-staleness alarm (PLAN M9): logs each *change* of health — a warning when
+    it turns stale or failed, a note when it recovers — so journald holds an honest
+    record of every outage without repeating itself every minute."""
+
+    def __init__(self) -> None:
+        self.last: HealthStatus | None = None
+
+    def check(self, health: Health) -> None:
+        if health.status == self.last:
+            return
+        if health.status in ("stale", "failed"):
+            log.warning("health %s: %s", health.status, "; ".join(health.reasons))
+        else:
+            log.info("health %s", health.status)
+        self.last = health.status

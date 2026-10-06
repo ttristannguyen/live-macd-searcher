@@ -375,7 +375,9 @@ This is the part that actually breaks live scanners, so it gets its own section.
   half-converged EMA generates plausible-looking garbage, which is worse than silence.
   A newly listed market simply stays `warming` until it has the history.
 - **Reconnects.** Hyperliquid drops a connection that has sent nothing for 60 seconds,
-  so the client pings every `WS_PING_SECONDS`. On reconnect: subscribe, and wait until
+  so the client pings every `WS_PING_SECONDS`. It also expires every connection after
+  about three hours (code 1000, reason "Expired" — seen 2026-10-06), so a reconnect is
+  routine, not an incident: that one streamed again within 4 seconds. On reconnect: subscribe, and wait until
   Hyperliquid has *confirmed* every subscription, buffering incoming messages; then
   REST-fetch each symbol from the hour that was forming when the connection dropped (or
   from its last processed bar); replay the closed ones; then drain the buffer. The closer

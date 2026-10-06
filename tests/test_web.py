@@ -1,6 +1,7 @@
 """The API (PLAN M6): illegal input can't be expressed, values match the detector exactly,
 and health reports a stale or failed feed instead of serving stale windows silently."""
 
+import logging
 import sqlite3
 import time
 from dataclasses import fields
@@ -16,7 +17,7 @@ from live_macd_searcher.ingest.feed import HOUR_MS
 from live_macd_searcher.runtime import RuntimeStatus
 from live_macd_searcher.store.db import connect, record_bar
 from live_macd_searcher.web.app import create_app, read_only
-from live_macd_searcher.web.health import judge
+from live_macd_searcher.web.health import HealthAlarm, judge
 from live_macd_searcher.web.models import WindowOut
 from tests.fakes import synthetic_history
 
@@ -253,3 +254,20 @@ def test_a_crashed_detector_is_reported_and_stops_the_process(db_path):
         health = test_client.get("/api/health").json()
     assert isinstance(stopped[0], ValueError)
     assert health["status"] == "failed"
+
+
+# --- the staleness alarm ------------------------------------------------------------
+
+
+def test_the_alarm_logs_each_change_of_health_once(caplog):
+    alarm = HealthAlarm()
+    ok = judge(status(), None, FRESH_BAR, NOW)
+    stale = judge(status(streaming=False), None, FRESH_BAR, NOW)
+    with caplog.at_level(logging.INFO, logger="live_macd_searcher.web.health"):
+        for health in (ok, ok, stale, stale, stale, ok):
+            alarm.check(health)
+    assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+        ("INFO", "health ok"),
+        ("WARNING", "health stale: reconnecting to the feed"),
+        ("INFO", "health ok"),
+    ]
