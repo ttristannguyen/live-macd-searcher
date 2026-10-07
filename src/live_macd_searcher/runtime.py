@@ -132,7 +132,7 @@ class Runtime:
 
     async def daily(self) -> None:
         """Prune old bars, and follow the universe as it changes."""
-        log.info("pruned %d bars", prune_bars(self.conn))
+        log.info("archived %d bars past retention", prune_bars(self.conn))
         try:
             universe = await self.feed.universe()
         except FeedError as exc:

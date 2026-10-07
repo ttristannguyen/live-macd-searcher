@@ -532,11 +532,19 @@ constraint's index also serves per-symbol lookups, so there is no separate one.
 `asset_class` is stored on the window, not derived at query time, so a later change to the classification sets cannot
 silently relabel past outcomes.
 
-Retention: `bars` more than 90 days older than the newest stored bar are pruned
-nightly — measured from exchange time, not the wall clock. Three months of hourly bars
-is still a quarter of the rows the 5-minute design kept for 30 days, and it keeps the
-bar-by-bar trace available for every window worth looking back at. `windows` are kept
-forever — they are tiny, and they are the evidence base.
+Retention: nothing is ever deleted. Bars more than 90 days older than the newest
+stored bar are *moved* nightly from `bars` to `bar_archive` — measured from exchange
+time, not the wall clock (PLAN D-3). `bars` stays the size a restart replays in seconds;
+the archive keeps every bar M10 needs for the baseline, returns at fixed horizons, and
+re-testing a gate or a new indicator — about 1.6 M rows a year. `windows` and
+`window_events` are kept forever: they are the evidence base.
+
+Two more tables make that evidence readable later (PLAN M9b). `window_events` is
+append-only — one row per event with the window's state *at that bar*, because the
+`windows` row only keeps the latest, and "was strength at open a good predictor?" needs
+the state at open. `runs` records, at every boot, the git commit and every constant in
+`detect/config.py`; each event carries its `run_id`, so a stored strength can always be
+read against the rules that produced it, even after a retune.
 
 ## 8. API and UI
 

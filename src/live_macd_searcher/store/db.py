@@ -157,9 +157,10 @@ def load_bars(conn: sqlite3.Connection, symbol: str) -> list[Candle]:
 
 
 def forget_bars(conn: sqlite3.Connection, symbol: str) -> None:
-    """Delete a symbol's stored bars, to re-seed it from scratch. Its windows are kept."""
+    """Take a symbol's bars out of the replay set, to re-seed it from scratch. They move
+    to `bar_archive`, never deleted; its windows are kept."""
     with conn:
-        conn.execute("DELETE FROM bars WHERE symbol = ?", (symbol,))
+        _archive(conn, "symbol = ?", (symbol,))
 
 
 def live_symbols(conn: sqlite3.Connection) -> set[str]:
@@ -169,14 +170,22 @@ def live_symbols(conn: sqlite3.Connection) -> set[str]:
 
 
 def prune_bars(conn: sqlite3.Connection) -> int:
-    """Delete bars more than `BAR_RETENTION_DAYS` older than the newest stored bar.
+    """Move bars more than `BAR_RETENTION_DAYS` older than the newest stored bar into
+    `bar_archive` (PLAN D-3). Nothing is deleted; `bars` just stays the size a restart
+    can replay quickly.
 
     Measured from the newest bar rather than the wall clock: exchange time is the only
-    clock (invariant 2). Windows are never pruned. Returns the number of bars deleted.
+    clock (invariant 2). Windows are never pruned. Returns the number of bars moved.
     """
     with conn:
-        cursor = conn.execute(
-            "DELETE FROM bars WHERE open_time < (SELECT MAX(open_time) FROM bars) - ?",
-            (BAR_RETENTION_DAYS * DAY_MS,),
-        )
-    return cursor.rowcount
+        newest = conn.execute("SELECT MAX(open_time) FROM bars").fetchone()[0]
+        if newest is None:
+            return 0
+        return _archive(conn, "open_time < ?", (newest - BAR_RETENTION_DAYS * DAY_MS,))
+
+
+def _archive(conn: sqlite3.Connection, where: str, params: tuple) -> int:
+    """Move the `bars` rows matching `where` into `bar_archive`. The caller owns the
+    transaction, so a bar is always in exactly one of the two tables."""
+    conn.execute(f"INSERT OR IGNORE INTO bar_archive SELECT * FROM bars WHERE {where}", params)
+    return conn.execute(f"DELETE FROM bars WHERE {where}", params).rowcount

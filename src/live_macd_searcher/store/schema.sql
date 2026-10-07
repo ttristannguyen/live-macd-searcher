@@ -83,3 +83,17 @@ CREATE TABLE IF NOT EXISTS window_events (
   -- An event's identity: replaying a bar can never write it twice.
   UNIQUE (window_id, kind, at)
 );
+
+-- Bars past retention (PLAN D-3): moved here, never deleted. `bars` stays small so a
+-- restart replays quickly; this keeps everything M10 needs — the baseline, returns at
+-- fixed horizons, re-testing a gate or a new indicator.
+CREATE TABLE IF NOT EXISTS bar_archive (
+  symbol     TEXT    NOT NULL,
+  open_time  INTEGER NOT NULL,
+  open       REAL    NOT NULL,
+  high       REAL    NOT NULL,
+  low        REAL    NOT NULL,
+  close      REAL    NOT NULL,
+  volume     REAL    NOT NULL,
+  PRIMARY KEY (symbol, open_time)
+);

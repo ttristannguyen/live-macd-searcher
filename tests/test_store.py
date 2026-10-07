@@ -162,27 +162,47 @@ def test_live_symbols_are_those_with_active_or_crossed_windows(conn):
     assert live_symbols(conn) == {"BTC", "ETH"}
 
 
-def test_forget_bars_keeps_the_windows(conn):
+def test_forget_bars_archives_them_and_keeps_the_windows(conn):
     candle = Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0)
     record_bar(conn, "BTC", candle, [WindowEvent("opened", WINDOW)], None)
     forget_bars(conn, "BTC")
     assert load_bars(conn, "BTC") == []
+    assert table(conn, "bar_archive") == [("BTC", 12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0)]
     assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 1
 
 
 # --- retention ---------------------------------------------------------------------
 
 
-def test_prune_keeps_bars_within_retention_of_the_newest_and_never_touches_windows(conn):
+def test_prune_moves_old_bars_to_the_archive_and_never_touches_windows(conn):
     newest = 200 * DAY_MS
     keep_from = newest - BAR_RETENTION_DAYS * DAY_MS
     for open_time in (keep_from - HOUR, keep_from, newest):
         upsert_bar(conn, "BTC", Candle(open_time, 1.0, 1.0, 1.0, 1.0, 1.0))
-    upsert_window(conn, WINDOW)  # its bars are long gone after this prune
+    upsert_window(conn, WINDOW)
 
     assert prune_bars(conn) == 1
     assert [row[1] for row in table(conn, "bars")] == [keep_from, newest]
+    assert [row[1] for row in table(conn, "bar_archive")] == [keep_from - HOUR]  # moved, not lost
     assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 1
+
+
+def test_no_bar_is_ever_lost_and_a_restart_replays_only_recent_ones(conn):
+    for day in range(200):
+        upsert_bar(conn, "BTC", Candle(day * DAY_MS, 1.0, 1.0, 1.0, float(day), 1.0))
+    prune_bars(conn)
+    prune_bars(conn)  # pruning again changes nothing
+
+    def count(name):
+        return conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+
+    assert count("bars") + count("bar_archive") == 200
+    replayed = load_bars(conn, "BTC")
+    assert replayed[0].open_time == (199 - BAR_RETENTION_DAYS) * DAY_MS  # the recent ones only
+
+
+def test_prune_on_an_empty_database_moves_nothing(conn):
+    assert prune_bars(conn) == 0
 
 
 # --- replay is a no-op: the M3 gate ------------------------------------------------
