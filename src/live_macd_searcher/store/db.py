@@ -111,6 +111,32 @@ def record_event(
     )
 
 
+def window_ids(conn: sqlite3.Connection, symbol: str) -> dict[int, int]:
+    """A symbol's stored windows: `started_at` (its identity) -> row id."""
+    return dict(conn.execute("SELECT started_at, id FROM windows WHERE symbol = ?", (symbol,)))
+
+
+def symbols_with_windows(conn: sqlite3.Connection) -> list[str]:
+    return [row[0] for row in conn.execute("SELECT DISTINCT symbol FROM windows ORDER BY symbol")]
+
+
+def logged_event(conn: sqlite3.Connection, window_id: int, kind: str, at: int) -> tuple | None:
+    """A logged event's (close, *EVENT_FIELDS), or None if it was never logged."""
+    row = conn.execute(
+        f"SELECT close, {', '.join(EVENT_FIELDS)} FROM window_events"
+        " WHERE window_id = ? AND kind = ? AND at = ?",
+        (window_id, kind, at),
+    ).fetchone()
+    return None if row is None else tuple(row)
+
+
+def latest_state(conn: sqlite3.Connection, window_id: int) -> tuple:
+    """A window row's latest (updated_at, *EVENT_FIELDS): what its last event must show."""
+    return tuple(conn.execute(
+        f"SELECT updated_at, {', '.join(EVENT_FIELDS)} FROM windows WHERE id = ?", (window_id,)
+    ).fetchone())  # fmt: skip
+
+
 def start_run(conn: sqlite3.Connection, started_at: int, code_version: str, config: dict) -> int:
     """Record this boot's provenance; returns the run id every event will carry."""
     with conn:
