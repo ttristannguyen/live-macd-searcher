@@ -34,6 +34,13 @@ def rows(conn: sqlite3.Connection, table: str) -> list[tuple]:
     if table == "windows":
         query = f"SELECT {', '.join(Window.__dataclass_fields__)} FROM windows"
         return sorted(tuple(row) for row in conn.execute(query))
+    if table == "window_events":
+        # Keyed by the window's identity rather than ids, and without run_id: a restart
+        # is a second run by design.
+        query = """SELECT w.symbol, w.started_at, e.kind, e.at, e.close, e.state, e.bars,
+                          e.strength, e.hist_pct, e.band, e.max_favourable_pct
+                   FROM window_events e JOIN windows w ON w.id = e.window_id"""
+        return sorted(tuple(row) for row in conn.execute(query))
     return sorted(tuple(row) for row in conn.execute(f"SELECT * FROM {table}"))
 
 
@@ -60,6 +67,7 @@ def test_a_restart_changes_nothing_about_the_stored_windows(tmp_path):
 
     assert rows(second.conn, "bars") == rows(never_stopped.conn, "bars")
     assert rows(second.conn, "windows") == rows(never_stopped.conn, "windows")
+    assert rows(second.conn, "window_events") == rows(never_stopped.conn, "window_events")
 
     # Not vacuous: windows were open across the restart and resolved after it.
     kill, restart = 583 * HOUR_MS, 587 * HOUR_MS
@@ -175,3 +183,26 @@ def test_a_failed_write_is_not_swallowed(tmp_path):
     runtime.conn.close()
     with pytest.raises(sqlite3.ProgrammingError):
         runtime._on_closed("BTC", Candle(0, 1.0, 1.0, 1.0, 1.0, 1.0))
+
+
+# --- the event log and provenance (PLAN D-1, D-2) -------------------------------------
+
+
+def test_every_window_has_one_opened_event_from_the_run_that_wrote_it(tmp_path):
+    feed = FakeFeed(HISTORY, [Session(now_hour=450, messages=stream_hours(HISTORY, 450, 699))])
+    heard = []
+    runtime = Runtime(connect(tmp_path / "db.sqlite3"), feed, now_ms=feed.now_ms,
+                      on_window=lambda event, window_id: heard.append(event),
+                      code_version="test-sha")  # fmt: skip
+    boot_and_stream(runtime, sessions=1)
+
+    conn = runtime.conn
+    assert conn.execute("SELECT COUNT(*) FROM window_events").fetchone()[0] == len(heard)
+    per_window = conn.execute("""SELECT COUNT(*) FROM window_events
+                                 WHERE kind = 'opened' GROUP BY window_id""").fetchall()
+    assert len(per_window) == conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0]
+    assert {row[0] for row in per_window} == {1}
+    run = conn.execute("SELECT id, code_version FROM runs").fetchone()
+    assert tuple(run) == (runtime.run_id, "test-sha")
+    run_ids = {r[0] for r in conn.execute("SELECT DISTINCT run_id FROM window_events")}
+    assert run_ids == {runtime.run_id}

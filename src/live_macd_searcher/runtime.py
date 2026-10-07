@@ -14,6 +14,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from .detect import config
 from .detect.config import BAR_RETENTION_DAYS, REFRESH_INTERVAL_MIN
 from .detect.symbol_state import Provisional, SymbolState
 from .detect.window import WindowEvent
@@ -27,7 +28,7 @@ from .store.db import (
     load_bars,
     prune_bars,
     record_bar,
-    window_id,
+    start_run,
 )
 
 log = logging.getLogger(__name__)
@@ -61,10 +62,13 @@ class Runtime:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         on_window: Callable[[WindowEvent, int], None] | None = None,
         on_provisional: Callable[[list[Provisional]], None] | None = None,
+        code_version: str = "unknown",
     ) -> None:
         """`on_window` hears every window event with its stored row id, and
         `on_provisional` every refresh's readings — the live stream (M7)."""
         self.conn = conn
+        self.code_version = code_version
+        self.run_id: int | None = None  # set by boot(): this run's provenance row
         self.on_window = on_window
         self.on_provisional = on_provisional
         self.feed = feed
@@ -100,6 +104,7 @@ class Runtime:
 
     async def boot(self) -> None:
         """Rebuild every symbol from its stored bars, then set up the live feed."""
+        self.run_id = start_run(self.conn, self.now_ms(), self.code_version, tunables())
         symbols = self._subscription(await self.feed.universe())
         for symbol in symbols:
             self._restore(symbol)
@@ -183,11 +188,11 @@ class Runtime:
             state = self.states[symbol] = SymbolState(symbol)
         events = state.on_bar(candle)
         # Not best-effort: a failed write raises and stops the app (CLAUDE.md guardrails).
-        record_bar(self.conn, symbol, candle, [event.window for event in events])
-        for event in events:
+        ids = record_bar(self.conn, symbol, candle, events, self.run_id)
+        for event, window_id in zip(events, ids, strict=True):
             # Only after the write: the stream never shows what the database doesn't hold.
             if self.on_window is not None:
-                self.on_window(event, window_id(self.conn, symbol, event.window.started_at))
+                self.on_window(event, window_id)
             window = event.window
             log.info("window %s: %s %s %s strength=%.0f", event.kind, symbol, window.side,
                      window.state, window.strength)  # fmt: skip
@@ -198,3 +203,8 @@ class Runtime:
             result = action()
             if inspect.isawaitable(result):
                 await result
+
+
+def tunables() -> dict:
+    """Every constant in `detect/config.py`, for the run's provenance row (PLAN D-2)."""
+    return {name: value for name, value in vars(config).items() if name.isupper()}

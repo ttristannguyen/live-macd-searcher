@@ -1,5 +1,6 @@
 """The store: schema, idempotent writes, retention, and replay as a no-op (PLAN M3)."""
 
+import json
 import math
 import sqlite3
 from dataclasses import fields, replace
@@ -8,7 +9,7 @@ import pytest
 
 from live_macd_searcher.detect.config import BACKFILL_BARS, BAR_RETENTION_DAYS
 from live_macd_searcher.detect.symbol_state import SymbolState
-from live_macd_searcher.detect.window import Window
+from live_macd_searcher.detect.window import Window, WindowEvent
 from live_macd_searcher.market import Candle
 from live_macd_searcher.store.db import (
     DAY_MS,
@@ -18,6 +19,7 @@ from live_macd_searcher.store.db import (
     load_bars,
     prune_bars,
     record_bar,
+    start_run,
     upsert_bar,
     upsert_window,
 )
@@ -132,7 +134,7 @@ def test_windows_with_different_peaks_are_different_rows(conn):
 
 def test_record_bar_writes_the_bar_and_its_windows_together(conn):
     candle = Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0)
-    record_bar(conn, "BTC", candle, [WINDOW])
+    record_bar(conn, "BTC", candle, [WindowEvent("opened", WINDOW)], None)
     assert load_bars(conn, "BTC") == [candle]
     assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 1
 
@@ -142,7 +144,7 @@ def test_record_bar_is_atomic_a_bad_window_rolls_back_its_bar(conn):
     # restart replays stored bars without writing, trusting their windows are stored.
     with pytest.raises(sqlite3.IntegrityError):
         record_bar(conn, "BTC", Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0),
-                   [replace(WINDOW, state="forming")])  # fmt: skip
+                   [WindowEvent("opened", replace(WINDOW, state="forming"))], None)  # fmt: skip
     assert load_bars(conn, "BTC") == []
 
 
@@ -161,7 +163,8 @@ def test_live_symbols_are_those_with_active_or_crossed_windows(conn):
 
 
 def test_forget_bars_keeps_the_windows(conn):
-    record_bar(conn, "BTC", Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0), [WINDOW])
+    candle = Candle(12 * HOUR, 1.0, 1.0, 1.0, 1.0, 1.0)
+    record_bar(conn, "BTC", candle, [WindowEvent("opened", WINDOW)], None)
     forget_bars(conn, "BTC")
     assert load_bars(conn, "BTC") == []
     assert conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0] == 1
@@ -196,7 +199,7 @@ def run(conn, candles, symbol="BTC"):
     """What the runtime does (M5): a symbol's state, then the store — from a cold start."""
     state = SymbolState(symbol)
     for candle in candles:
-        record_bar(conn, symbol, candle, [event.window for event in state.on_bar(candle)])
+        record_bar(conn, symbol, candle, state.on_bar(candle), None)
 
 
 def test_the_replay_fixture_is_not_vacuous(conn):
@@ -223,3 +226,43 @@ def test_replaying_an_earlier_part_of_the_range_rolls_nothing_back(conn):
     run(conn, CANDLES[: BACKFILL_BARS + 200])  # replay stops partway, as a crash might
 
     assert table(conn, "windows") == windows_before
+
+
+# --- the event log and provenance (PLAN D-1, D-2) -------------------------------------
+
+
+def events(conn):
+    return [dict(row) for row in conn.execute("SELECT * FROM window_events ORDER BY at, kind")]
+
+
+def test_each_event_keeps_the_state_at_its_own_bar(conn):
+    opened = WINDOW  # updated_at 12h, strength 55
+    later = replace(WINDOW, updated_at=13 * HOUR, bars=3, strength=71.0, hist_pct=-0.2)
+    for hour, close, event in [(12, 100.0, WindowEvent("opened", opened)),
+                               (13, 101.0, WindowEvent("updated", later))]:
+        record_bar(conn, "BTC", Candle(hour * HOUR, 1, 1, 1, close, 1), [event], 7)
+
+    logged = events(conn)
+    assert [(e["kind"], e["at"], e["strength"], e["bars"], e["close"]) for e in logged] == [
+        ("opened", 12 * HOUR, 55.0, 2, 100.0),  # the state when it opened survives...
+        ("updated", 13 * HOUR, 71.0, 3, 101.0),
+    ]
+    # ...though the window row itself moved on.
+    assert conn.execute("SELECT strength FROM windows").fetchone()[0] == 71.0
+    assert {e["run_id"] for e in logged} == {7}
+    window_id = conn.execute("SELECT id FROM windows").fetchone()[0]
+    assert {e["window_id"] for e in logged} == {window_id}
+
+
+def test_replaying_an_event_never_writes_it_twice(conn):
+    candle = Candle(12 * HOUR, 1, 1, 1, 100.0, 1)
+    for _ in range(2):
+        record_bar(conn, "BTC", candle, [WindowEvent("opened", WINDOW)], 1)
+    assert len(events(conn)) == 1
+
+
+def test_a_run_records_the_code_and_every_constant(conn):
+    run_id = start_run(conn, 1_000, "abc123", {"MIN_PEAK_PCT": 0.05, "WEIGHTS": {"decay": 0.4}})
+    row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    assert (row["started_at"], row["code_version"]) == (1_000, "abc123")
+    assert json.loads(row["config"]) == {"MIN_PEAK_PCT": 0.05, "WEIGHTS": {"decay": 0.4}}

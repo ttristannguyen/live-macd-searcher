@@ -38,7 +38,7 @@ def db_path(tmp_path_factory):
     for phase, symbol in enumerate(SYMBOLS):
         state = SymbolState(symbol)
         for candle in synthetic_history(HOURS, phase):
-            record_bar(conn, symbol, candle, [e.window for e in state.on_bar(candle)])
+            record_bar(conn, symbol, candle, state.on_bar(candle), None)
     conn.close()
     return path
 

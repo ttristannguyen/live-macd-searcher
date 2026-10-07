@@ -2,7 +2,7 @@
 
 Milestones for [DESIGN.md](DESIGN.md), in dependency order. Tick boxes as they land.
 
-**Now:** M9 — Run it permanently
+**Now:** M9 — Run it permanently (soak) · M9b — Data for analysis
 
 Each milestone has a **Done when** line. That line is the gate: if it isn't true, the
 milestone isn't finished, regardless of how much code exists. Don't start a milestone
@@ -244,7 +244,7 @@ Blocked by: M8. Follow DESIGN §13; every choice below copies `macd_searcher` on
 - [x] Feed-staleness alarm (log-level is fine to start) — `HealthAlarm`: health judged every `HEALTH_CHECK_SECONDS`, each change logged, stale/failed as WARNING
 - [x] Backup: `scripts/sync_prod_db.ps1` adapted from `macd_searcher` — SQLite online backup on the droplet, pulled to the desktop (written; first real run on the droplet)
 - [ ] Check: the board loads at `https://<droplet>.<tailnet>.ts.net:8443/` and a window appears without a refresh
-- [ ] Check: nothing answers on the droplet's public IP at 8001
+- [x] Check: nothing answers on the droplet's public IP at 8001 — 2026-10-06: `curl` from the desktop timed out after 5 s (dropped, not even refused)
 - [ ] Check: `macd_searcher`'s page and cron still work, unaffected
 - [ ] Check: `macd_searcher`'s `logs/scan.log` shows no more `attempt N failed` retry warnings in the week after deploy than the week before
 - [ ] Check (one-off): a day of stored websocket bars matches `candleSnapshot` for every symbol (DESIGN §11 — if not, closed bars move to REST confirmation). `scripts/audit_bars.py`. **First run, desktop, 2026-10-06 — 6 h x 185 symbols: 1,109 agree, 1 differs** (ZEC 13:00, websocket-closed: close 1342.6 vs 1342.7, volume short by 0.02 — the hour's last trade missed). See D14
@@ -253,6 +253,30 @@ Blocked by: M8. Follow DESIGN §13; every choice below copies `macd_searcher` on
 **Done when:** it has survived a week unattended on the droplet, including at least one
 restart of the service, is reachable over the tailnet and nowhere else, and
 `macd_searcher` never noticed it arrived.
+
+---
+
+## M9b — Data for analysis
+
+Blocked by: M9 deploy. M10 can only fit what was recorded, and none of this can be
+backfilled once lost — so it lands before the data piles up. What M10 will ask, and what
+it needs:
+
+| M10 question | Needs |
+| --- | --- |
+| Does strength *at open* predict the outcome? | each window's state at every event, not just its latest |
+| Did a retune help? | which rules (code + every constant) produced each window |
+| How often does price hit the band anyway (the baseline)? Returns at fixed horizons? Re-test a gate? | bars, kept beyond 90 days |
+
+- [x] **D-1 `window_events`** — append-only: one row per event (opened / updated / crossed / resolved) with the window's state at that bar: strength, regime, band, band offset, hist/macd/signal %, line turn, bars, bars since cross, excursions. Written in the same transaction as the bar; idempotent (a replayed event is ignored). Tested: state at each bar survives the window row moving on; replays never duplicate; a restart leaves the event log identical
+- [x] **D-2 `runs`** — provenance: one row per boot with the code version (git commit) and every constant in `detect/config.py`; each event carries its `run_id`, so the *opened* event says which rules produced a window. The version is `git rev-parse`, marked `+dirty` if the checkout has local edits
+- [ ] **D-3 `bar_archive`** — pruning *moves* bars older than `BAR_RETENTION_DAYS` instead of deleting them; boot still replays only `bars`, so restarts stay fast
+- [ ] **D-4 backfill** — `scripts/backfill_events.py` rebuilds the events of windows recorded before D-1 by replaying stored bars (exact: the rules haven't changed since); marked as reconstructed, never mixed up with live rows
+- [ ] **D-5 deploy** — on the droplet: pull, restart, backfill, and check the new tables fill at the next close
+
+**Done when:** for every window, its whole journey can be read back exactly as it was at
+each bar, under the rules that produced it, and no bar is ever deleted — each with a test
+that would notice if it stopped being true.
 
 ---
 

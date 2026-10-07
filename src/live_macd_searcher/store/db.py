@@ -5,12 +5,13 @@ windows are the outcome record, so a failed write raises to the caller rather th
 being logged and dropped.
 """
 
+import json
 import sqlite3
 from dataclasses import astuple, fields
 from pathlib import Path
 
 from ..detect.config import BAR_RETENTION_DAYS
-from ..detect.window import Window
+from ..detect.window import Window, WindowEvent
 from ..market import Candle
 
 SCHEMA = Path(__file__).with_name("schema.sql")
@@ -29,6 +30,19 @@ _UPSERT_WINDOW = f"""
     WHERE excluded.updated_at >= windows.updated_at
 """
 
+
+# The window's state captured with each event (PLAN D-1): everything that can change
+# from bar to bar. Identity and the frozen-at-open fields live on the `windows` row.
+EVENT_FIELDS = (
+    "state", "bars", "strength", "regime", "band", "band_offset", "hist_pct", "macd_pct",
+    "signal_pct", "line_turn", "bars_since_cross", "max_favourable_pct", "max_adverse_pct",
+)  # fmt: skip
+
+_INSERT_EVENT = f"""
+    INSERT OR IGNORE INTO window_events
+        (window_id, run_id, kind, at, close, reconstructed, {", ".join(EVENT_FIELDS)})
+    VALUES (?, ?, ?, ?, ?, ?, {", ".join(["?"] * len(EVENT_FIELDS))})
+"""
 
 _UPSERT_BAR = """
     INSERT INTO bars (symbol, open_time, open, high, low, close, volume)
@@ -56,18 +70,55 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 def record_bar(
-    conn: sqlite3.Connection, symbol: str, candle: Candle, windows: list[Window]
-) -> None:
-    """Store a closed bar and every window snapshot it produced, in one transaction.
+    conn: sqlite3.Connection,
+    symbol: str,
+    candle: Candle,
+    events: list[WindowEvent],
+    run_id: int | None,
+) -> list[int]:
+    """Store a closed bar, every window snapshot it produced, and their event-log rows,
+    in one transaction. Returns each event's window id, in order.
 
-    Atomic on purpose: a crash can never leave a bar stored without its windows. That
-    is what lets a restart rebuild state by replaying stored bars without writing
-    anything — whatever they produced is already here.
+    Atomic on purpose: a crash can never leave a bar stored without its windows and
+    events. That is what lets a restart rebuild state by replaying stored bars without
+    writing anything — whatever they produced is already here.
     """
     with conn:
         conn.execute(_UPSERT_BAR, (symbol, *candle))
-        for window in windows:
-            conn.execute(_UPSERT_WINDOW, astuple(window))
+        ids = []
+        for event in events:
+            conn.execute(_UPSERT_WINDOW, astuple(event.window))
+            ids.append(window_id(conn, symbol, event.window.started_at))
+            record_event(conn, ids[-1], event, candle.close, run_id)
+    return ids
+
+
+def record_event(
+    conn: sqlite3.Connection,
+    window_id: int,
+    event: WindowEvent,
+    close: float,
+    run_id: int | None,
+    *,
+    reconstructed: bool = False,
+) -> None:
+    """One `window_events` row. The caller owns the transaction. A repeat is ignored."""
+    window = event.window
+    snapshot = [getattr(window, field) for field in EVENT_FIELDS]
+    conn.execute(
+        _INSERT_EVENT,
+        (window_id, run_id, event.kind, window.updated_at, close, int(reconstructed), *snapshot),
+    )
+
+
+def start_run(conn: sqlite3.Connection, started_at: int, code_version: str, config: dict) -> int:
+    """Record this boot's provenance; returns the run id every event will carry."""
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO runs (started_at, code_version, config) VALUES (?, ?, ?)",
+            (started_at, code_version, json.dumps(config, sort_keys=True)),
+        )
+    return cursor.lastrowid
 
 
 def upsert_bar(conn: sqlite3.Connection, symbol: str, candle: Candle) -> None:

@@ -6,6 +6,7 @@ Bound to localhost by default; it is reached over Tailscale, never exposed (DESI
 
 import argparse
 import logging
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,22 @@ from .web.stream import Broadcaster
 DEFAULT_DB = Path("state/live_macd_searcher.sqlite3")
 
 
+def code_version() -> str:
+    """The git commit running, for each run's provenance row (PLAN D-2) — with "+dirty"
+    if the checkout has local edits, so an edited copy never passes for a release."""
+    here = Path(__file__).parent
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=here, capture_output=True, text=True,
+                              check=True).stdout.strip()  # fmt: skip
+
+    try:
+        commit = git("rev-parse", "--short=12", "HEAD")
+        return commit + ("+dirty" if git("status", "--porcelain", "--untracked-files=no") else "")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"  # not a git checkout: say so rather than guess
+
+
 def production_app(db_path: Path) -> FastAPI:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     client = httpx.AsyncClient()
@@ -32,6 +49,7 @@ def production_app(db_path: Path) -> FastAPI:
         HyperliquidFeed(client, RestPacer(REST_WEIGHT_PER_MIN)),
         on_window=broadcaster.window,
         on_provisional=broadcaster.provisional,
+        code_version=code_version(),
     )
 
     async def run() -> None:
